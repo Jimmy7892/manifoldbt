@@ -1,0 +1,726 @@
+"""manifoldbt: Fast research backtesting with Rust core + Python DSL."""
+import copy
+import json
+from typing import Any, Dict, List, Optional
+
+import importlib as _importlib
+
+from manifoldbt._native import (
+    BacktestResult,
+    BatchResultLite,
+    DataStore,
+    activate,
+    license_info as _license_info,
+    compile_strategy_json,
+    run as _run_native,
+    run_batch as _run_batch_native,
+    run_batch_lite as _run_batch_lite_native,
+    run_json,
+    run_sweep as _run_sweep_native,
+    run_sweep_lite as _run_sweep_lite_native,
+    run_with_parquet,
+    py_run_walk_forward as _run_walk_forward_native,
+    py_run_sweep_2d as _run_sweep_2d_native,
+    py_run_stability as _run_stability_native,
+    py_replay as _replay_native,
+    py_run_monte_carlo,
+    run_portfolio as _run_portfolio_native,
+)
+from manifoldbt._serde import scalar_value_to_json
+from manifoldbt.config import (
+    BacktestConfig,
+    ExecutionConfig,
+    FeeConfig,
+    OrderConfig,
+    resolve_universe,
+)
+from manifoldbt.exceptions import (
+    BacktesterError,
+    ConfigError,
+    DataError,
+    LicenseError,
+    StrategyError,
+)
+from manifoldbt.expr import AssetRef, Expr, asset, col, hold, lit, param, s, scan, symbol_ref, when
+from manifoldbt.helpers import (
+    ExecutionPrice,
+    FillModel,
+    Interval,
+    Slippage,
+    date_to_ns,
+    time_range,
+)
+from manifoldbt.portfolio import Portfolio
+from manifoldbt.result import Result
+from manifoldbt.strategy import Strategy
+from manifoldbt.sweep import SweepResult
+from manifoldbt import indicators
+
+# ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+try:
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("manifoldbt")
+except Exception:
+    __version__ = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# License banner
+# ---------------------------------------------------------------------------
+def _print_banner():
+    try:
+        tier, email = _license_info()
+        if tier == "Pro" and email:
+            print(f"manifoldbt v{__version__} | \033[38;5;214mPro\033[0m | {email}")
+        else:
+            print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: manifold-bt.com")
+    except Exception:
+        print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: manifold-bt.com")
+
+_print_banner()
+del _print_banner
+
+
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
+
+_pro_warnings: list = []
+
+
+def _warn_pro(msg: str) -> None:
+    """Collect a Pro feature warning (printed at exit)."""
+    if msg not in _pro_warnings:
+        _pro_warnings.append(msg)
+
+
+def _print_pro_summary() -> None:
+    """Print collected Pro warnings at exit."""
+    if _pro_warnings:
+        print()
+        for w in _pro_warnings:
+            print(f"\033[38;5;214m[!] {w} -- Pro feature\033[0m")
+        print("\033[38;5;214m  -> upgrade at manifold-bt.com\033[0m")
+
+
+import atexit
+atexit.register(_print_pro_summary)
+
+
+def _is_pro() -> bool:
+    """Check if current license is Pro."""
+    try:
+        tier, _ = _license_info()
+        return tier == "Pro"
+    except Exception:
+        return False
+
+
+def _require_pro(feature: str) -> None:
+    """Warn and raise if not Pro. Use _gate_pro for graceful skip."""
+    _warn_pro(feature)
+    raise LicenseError(f"{feature} — Pro license required")
+
+
+def _gate_pro(feature: str) -> bool:
+    """Check Pro license. Returns True if Pro, False if Community (with warning)."""
+    if _is_pro():
+        return True
+    _warn_pro(feature)
+    return False
+
+
+def _classify_error(exc: Exception) -> Exception:
+    """Wrap a Rust ValueError/RuntimeError in a more specific exception."""
+    msg = str(exc)
+    if any(kw in msg for kw in ("data", "parquet", "partition", "store", "version", "symbol")):
+        return DataError(msg)
+    if any(kw in msg for kw in ("strategy", "signal", "compile", "expression", "type")):
+        return StrategyError(msg)
+    if any(kw in msg for kw in ("config", "interval", "universe", "time_range")):
+        return ConfigError(msg)
+    return BacktesterError(msg)
+
+
+# ---------------------------------------------------------------------------
+# Config preparation (symbol resolution + strategy orders merge)
+# ---------------------------------------------------------------------------
+
+def _prepare_config(config: BacktestConfig, strategy: Strategy, store: DataStore) -> BacktestConfig:
+    """Prepare config for execution: resolve symbols and merge strategy orders."""
+    cfg = config
+
+    # Resolve string symbols in universe
+    has_strings = any(isinstance(s, str) for s in cfg.universe)
+    has_strategy_orders = hasattr(strategy, '_orders') and strategy._orders
+
+    if not has_strings and not has_strategy_orders:
+        return cfg
+
+    cfg = copy.deepcopy(cfg)
+
+    if has_strings:
+        cfg.universe = resolve_universe(cfg.universe, store)
+
+    # Merge orders from strategy into execution config
+    if has_strategy_orders:
+        if cfg.execution.orders is None:
+            cfg.execution.orders = OrderConfig()
+        for key, val in strategy._orders.items():
+            setattr(cfg.execution.orders, key, val)
+
+    return cfg
+
+
+def _is_sub_daily(res: Any) -> bool:
+    """Return True if an Interval dict represents sub-daily resolution."""
+    if not isinstance(res, dict):
+        return False
+    if "Seconds" in res or "Minutes" in res:
+        return True
+    if "Hours" in res and res["Hours"] < 24:
+        return True
+    return False
+
+
+def _interval_to_seconds(interval: Any) -> int:
+    """Convert an Interval dict to total seconds."""
+    if not isinstance(interval, dict):
+        return 0
+    if "Seconds" in interval:
+        return interval["Seconds"]
+    if "Minutes" in interval:
+        return interval["Minutes"] * 60
+    if "Hours" in interval:
+        return interval["Hours"] * 3600
+    if "Days" in interval:
+        return interval["Days"] * 86400
+    return 0
+
+
+def _dataset_for_interval(interval: Any) -> str:
+    """Map a bar interval to the best matching dataset (<= interval).
+
+    Available: bars_1m (60s), bars_15m (900s), bars_1h (3600s), bars_1d (86400s).
+    """
+    secs = _interval_to_seconds(interval) if interval else 0
+    secs = min(secs, 86400)
+    if secs >= 86400:
+        return "bars_1d"
+    if secs >= 3600:
+        return "bars_1h"
+    if secs >= 900:
+        return "bars_15m"
+    return "bars_1m"
+
+
+# Exact matches: bar_interval → dataset (no hybrid mode)
+_EXACT_DATASETS = {60: "bars_1m", 900: "bars_15m", 3600: "bars_1h", 86400: "bars_1d"}
+
+
+def _dataset_for_interval_exact(interval: Any) -> str:
+    """Pick a dataset that avoids hybrid mode overhead.
+
+    If bar_interval exactly matches a dataset resolution, use it.
+    Otherwise, pick the closest LARGER dataset so the engine doesn't
+    activate hybrid mode (signal on coarse + sim on fine = slow).
+    Capped at bars_1d.
+    """
+    secs = _interval_to_seconds(interval) if interval else 0
+    # Exact match — best case, no resample needed
+    if secs in _EXACT_DATASETS:
+        return _EXACT_DATASETS[secs]
+    # No exact match: pick the next larger dataset to avoid hybrid overhead
+    # e.g. 4h (14400s) → bars_1d (86400s), not bars_1h (3600s) which triggers hybrid
+    for threshold, dataset in sorted(_EXACT_DATASETS.items()):
+        if threshold >= secs:
+            return dataset
+    return "bars_1d"
+
+
+def _resolve_store(config: BacktestConfig, store: DataStore) -> DataStore:
+    """Select the right dataset based on config.
+
+    Two modes:
+      - **Normal** (default): dataset matches ``bar_interval`` exactly.
+        If no exact match, picks the closest smaller dataset and sets
+        ``resample_to`` so the engine resamples to bar_interval (no hybrid overhead).
+      - **Accuracy** (``accuracy=True`` on config): always loads ``bars_1m``.
+        Signals on ``bar_interval``, simulation on 1-min bars.
+        Required for precise SL/TP fills.
+
+    Skips auto-resolve if the user explicitly set a non-default dataset.
+    """
+    try:
+        current = store.dataset()
+    except Exception:
+        return store
+
+    # If user explicitly chose a non-default dataset, respect it
+    if current != "bars_1m":
+        return store
+
+    # Accuracy mode: keep bars_1m (hybrid: signals on bar_interval, sim on 1m)
+    if getattr(config, "accuracy", False):
+        return store
+
+    # Normal mode: pick dataset <= bar_interval.
+    # The lite sim path runs on resampled bars, so no hybrid overhead.
+    target = _dataset_for_interval(config.bar_interval)
+
+    if target == current:
+        return store
+
+    try:
+        return DataStore(
+            data_root=store.data_root(),
+            metadata_db=store.metadata_db(),
+            dataset=target,
+        )
+    except Exception:
+        return store
+
+
+def _cap_output_resolution(config: BacktestConfig) -> BacktestConfig:
+    """Cap output_resolution to daily for Community users (Pro feature)."""
+    if config.output_resolution is None:
+        return config
+    if not _is_sub_daily(config.output_resolution):
+        return config
+    if _is_pro():
+        return config
+    _warn_pro("output_resolution capped to daily")
+    config = copy.deepcopy(config)
+    config.output_resolution = None
+    return config
+
+
+# ---------------------------------------------------------------------------
+# Core API
+# ---------------------------------------------------------------------------
+
+def run(
+    strategy: Strategy,
+    config: BacktestConfig,
+    store: DataStore,
+) -> Result:
+    """Run a backtest and return a rich Result.
+
+    Returns a :class:`Result` with DataFrame conversion, summaries,
+    and plotting methods. Access the raw Rust object via ``result.raw``.
+    """
+    try:
+        config = _cap_output_resolution(config)
+        store = _resolve_store(config, store)
+        cfg = _prepare_config(config, strategy, store)
+        raw = _run_native(strategy.to_json(), cfg.to_json(), store)
+        return Result(raw)
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+def run_sweep(
+    strategy: Strategy,
+    param_grid: Dict[str, List[Any]],
+    config: BacktestConfig,
+    store: DataStore,
+    *,
+    max_parallelism: int = 0,
+) -> SweepResult:
+    """Run a parameter sweep in parallel (rayon) and return a SweepResult.
+
+    Args:
+        strategy: Strategy definition.
+        param_grid: Mapping of parameter names to lists of values.
+            Example: ``{"fast": [10, 20, 30], "slow": [50, 60]}``
+            produces 6 combinations (Cartesian product).
+        config: Backtest configuration.
+        store: Data store.
+        max_parallelism: Maximum threads. 0 = all available cores.
+
+    Returns:
+        A :class:`SweepResult` with ``.to_df()``, ``.best()``, ``.plot_metric()``.
+    """
+    try:
+        config = _cap_output_resolution(config)
+        store = _resolve_store(config, store)
+        cfg = _prepare_config(config, strategy, store)
+        grid_json = json.dumps({
+            name: [scalar_value_to_json(v) for v in values]
+            for name, values in param_grid.items()
+        })
+        raw_results = _run_sweep_native(
+            strategy.to_json(),
+            grid_json,
+            cfg.to_json(),
+            store,
+            max_parallelism,
+        )
+        return SweepResult(raw_results, param_grid)
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+def run_batch(
+    strategies: List[Strategy],
+    config: BacktestConfig,
+    store: DataStore,
+    *,
+    max_parallelism: int = 0,
+) -> List[Result]:
+    """Run many strategies in parallel sharing a single data load.
+
+    Loads bars once, aligns timestamps once, then evaluates each strategy
+    on a separate rayon thread.  Much faster than calling ``run()`` in a loop.
+
+    Args:
+        strategies: List of Strategy definitions.
+        config: Shared backtest configuration (same universe/time range).
+        store: Data store.
+        max_parallelism: Maximum threads. 0 = all available cores.
+
+    Returns:
+        One :class:`Result` per strategy, in input order.
+    """
+    try:
+        config = _cap_output_resolution(config)
+        store = _resolve_store(config, store)
+        strategy_jsons = [strat.to_json() for strat in strategies]
+        raw_results = _run_batch_native(
+            strategy_jsons,
+            config.to_json(),
+            store,
+            max_parallelism,
+        )
+        return [Result(r) for r in raw_results]
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+def run_batch_lite(
+    strategies: List[Strategy],
+    config: BacktestConfig,
+    store: DataStore,
+    *,
+    max_parallelism: int = 0,
+) -> List["BatchResultLite"]:
+    """Run many strategies in parallel, returning only metrics (no Arrow output).
+
+    Much faster and lighter than ``run_batch`` — skips trade logging,
+    position traces, and Arrow output construction.  Ideal for parameter sweeps
+    where you only need metrics to select the best variant.
+
+    Args:
+        strategies: List of Strategy definitions.
+        config: Shared backtest configuration (same universe/time range).
+        store: Data store.
+        max_parallelism: Maximum threads. 0 = all available cores.
+
+    Returns:
+        One :class:`BatchResultLite` per strategy (name, metrics, equity, trade_count).
+    """
+    try:
+        config = _cap_output_resolution(config)
+        store = _resolve_store(config, store)
+        strategy_jsons = [strat.to_json() for strat in strategies]
+        return _run_batch_lite_native(
+            strategy_jsons,
+            config.to_json(),
+            store,
+            max_parallelism,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+def run_sweep_lite(
+    strategy: Strategy,
+    param_grid: Dict[str, List[Any]],
+    config: BacktestConfig,
+    store: DataStore,
+    *,
+    max_parallelism: int = 0,
+) -> List["BatchResultLite"]:
+    """Run a parameter sweep returning only metrics (no Arrow output).
+
+    Same as ``run_sweep`` but uses the lite path — much faster for large grids.
+    Supports ``param()`` in indicator periods (auto re-compilation per combo).
+
+    Args:
+        strategy: Strategy definition (may use ``param()`` in indicator periods).
+        param_grid: Mapping of parameter names to lists of values.
+        config: Backtest configuration.
+        store: Data store.
+        max_parallelism: Maximum threads. 0 = all available cores.
+
+    Returns:
+        One :class:`BatchResultLite` per combo (Cartesian product order).
+    """
+    try:
+        config = _cap_output_resolution(config)
+        store = _resolve_store(config, store)
+        cfg = _prepare_config(config, strategy, store)
+        grid_json = json.dumps({
+            name: [scalar_value_to_json(v) for v in values]
+            for name, values in param_grid.items()
+        })
+        return _run_sweep_lite_native(
+            strategy.to_json(),
+            grid_json,
+            cfg.to_json(),
+            store,
+            max_parallelism,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Research API
+# ---------------------------------------------------------------------------
+
+def run_walk_forward(
+    strategy: Strategy,
+    wf_config: Dict[str, Any],
+    config: BacktestConfig,
+    store: "DataStore",
+) -> Dict[str, Any]:
+    """Run walk-forward analysis (Pro only).
+
+    Args:
+        strategy: Strategy definition.
+        wf_config: Walk-forward config dict with keys:
+            method (str): "Anchored" or "Rolling"
+            n_splits (int): Number of folds.
+            train_ratio (float): Fraction for training (0, 1).
+            optimize_metric (str): e.g. "sharpe", "sortino".
+            param_grid (dict): Parameter grid for optimization.
+            max_parallelism (int): Max threads.
+        config: Backtest configuration.
+        store: Data store.
+
+    Returns:
+        Dict with ``folds`` and ``best_params_per_fold``.
+    """
+    if not _gate_pro("Walk-forward optimization"):
+        return {"folds": [], "best_params_per_fold": []}
+    wf_json = json.dumps(_convert_param_grid_in_config(wf_config))
+    return _run_walk_forward_native(strategy.to_json(), wf_json, config.to_json(), store)
+
+
+def run_sweep_2d(
+    strategy: Strategy,
+    sweep_config: Dict[str, Any],
+    config: BacktestConfig,
+    store: "DataStore",
+) -> Dict[str, Any]:
+    """Run a 2D parameter sweep (heatmap).
+
+    Args:
+        strategy: Strategy definition.
+        sweep_config: Dict with keys:
+            x_param (str): First parameter name.
+            x_values (list): Values for x_param.
+            y_param (str): Second parameter name.
+            y_values (list): Values for y_param.
+            metric (str): Metric to collect.
+            max_parallelism (int): Max threads.
+        config: Backtest configuration.
+        store: Data store.
+
+    Returns:
+        Dict with ``metric_grid`` (2D list), ``x_values``, ``y_values``, etc.
+    """
+    sweep_json = json.dumps(_convert_scalar_values_in_sweep(sweep_config))
+    return _run_sweep_2d_native(strategy.to_json(), sweep_json, config.to_json(), store)
+
+
+def run_stability(
+    strategy: Strategy,
+    stability_config: Dict[str, Any],
+    config: BacktestConfig,
+    store: "DataStore",
+) -> Dict[str, Any]:
+    """Run parameter stability analysis.
+
+    Args:
+        strategy: Strategy definition.
+        stability_config: Dict with keys:
+            param_name (str): Parameter to vary.
+            values (list): Values to test.
+            metric (str): Metric to evaluate.
+            max_parallelism (int): Max threads.
+        config: Backtest configuration.
+        store: Data store.
+
+    Returns:
+        Dict with ``stability_score``, ``metric_values``, ``mean_metric``, ``std_metric``.
+    """
+    stab_json = json.dumps(_convert_scalar_values_in_stability(stability_config))
+    return _run_stability_native(strategy.to_json(), stab_json, config.to_json(), store)
+
+
+def replay(
+    manifest: Dict[str, Any],
+    strategy: Strategy,
+    store: "DataStore",
+) -> Result:
+    """Replay a backtest from a saved manifest.
+
+    Args:
+        manifest: RunManifest dict (as returned by a previous run).
+        strategy: Original strategy definition (needed to recompile).
+        store: Data store.
+
+    Returns:
+        Result from the replayed run.
+    """
+    raw = _replay_native(json.dumps(manifest), strategy.to_json(), store)
+    return Result(raw)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio API
+# ---------------------------------------------------------------------------
+
+def run_portfolio(
+    portfolio: Portfolio,
+    config: BacktestConfig,
+    store: DataStore,
+) -> Result:
+    """Run a multi-strategy portfolio backtest.
+
+    Args:
+        portfolio: Portfolio definition with strategies and allocations.
+        config: Backtest configuration (shared across all strategies).
+        store: Data store.
+
+    Returns:
+        A :class:`Result` with combined portfolio metrics. Access per-strategy
+        breakdown via ``result.per_strategy``.
+    """
+    try:
+        raw_combined, per_strategy_info = _run_portfolio_native(
+            portfolio.to_json(),
+            config.to_json(),
+            store,
+        )
+        result = Result(raw_combined)
+        result._per_strategy = per_strategy_info
+        return result
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Lazy submodule imports
+# ---------------------------------------------------------------------------
+
+def __getattr__(name: str):
+    if name == "plot":
+        return _importlib.import_module("manifoldbt.plot")
+    if name == "diagnostics":
+        return _importlib.import_module("manifoldbt.diagnostics")
+    raise AttributeError(f"module 'manifoldbt' has no attribute {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _convert_param_grid_in_config(wf_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert param_grid values to Rust ScalarValue JSON format."""
+    result = dict(wf_config)
+    if "param_grid" in result:
+        result["param_grid"] = {
+            name: [scalar_value_to_json(v) for v in values]
+            for name, values in result["param_grid"].items()
+        }
+    return result
+
+
+def _convert_scalar_values_in_sweep(sweep_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert x_values/y_values to Rust ScalarValue JSON format."""
+    result = dict(sweep_config)
+    if "x_values" in result:
+        result["x_values"] = [scalar_value_to_json(v) for v in result["x_values"]]
+    if "y_values" in result:
+        result["y_values"] = [scalar_value_to_json(v) for v in result["y_values"]]
+    return result
+
+
+def _convert_scalar_values_in_stability(stability_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert values to Rust ScalarValue JSON format."""
+    result = dict(stability_config)
+    if "values" in result:
+        result["values"] = [scalar_value_to_json(v) for v in result["values"]]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    # Core types
+    "BacktestResult",
+    "BatchResultLite",
+    "DataStore",
+    "Result",
+    "SweepResult",
+    # Run functions
+    "run",
+    "run_sweep",
+    "run_batch",
+    "run_batch_lite",
+    "run_json",
+    "run_with_parquet",
+    "compile_strategy_json",
+    # DSL
+    "AssetRef",
+    "Expr",
+    "asset",
+    "col",
+    "lit",
+    "param",
+    "s",
+    "scan",
+    "symbol_ref",
+    "when",
+    # Strategy & config
+    "Strategy",
+    "BacktestConfig",
+    "ExecutionConfig",
+    "FeeConfig",
+    "OrderConfig",
+    # Helpers
+    "date_to_ns",
+    "time_range",
+    "Slippage",
+    "Interval",
+    "ExecutionPrice",
+    "FillModel",
+    # Exceptions
+    "BacktesterError",
+    "DataError",
+    "StrategyError",
+    "ConfigError",
+    # Research
+    "run_walk_forward",
+    "run_sweep_2d",
+    "run_stability",
+    "replay",
+    "py_run_monte_carlo",
+    # Portfolio
+    "Portfolio",
+    "run_portfolio",
+    # Version
+    "__version__",
+    # Indicators (submodule)
+    "indicators",
+    # Plotting (lazy, requires matplotlib)
+    "plot",
+    # Diagnostics (lazy)
+    "diagnostics",
+]
