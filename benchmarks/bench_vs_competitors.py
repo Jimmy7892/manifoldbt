@@ -62,7 +62,7 @@ def bench_bt_engine(df: pd.DataFrame, n_runs: int) -> dict:
 
     # Write synthetic data to a temp parquet (manifoldbt canonical schema)
     parquet_df = pd.DataFrame({
-        "timestamp": pd.to_datetime(df["timestamp"].values, utc=True),
+        "timestamp": pd.to_datetime(df["timestamp"].values, utc=True).as_unit("ns"),
         "symbol_id": np.uint32(1),
         "open": df["open"].values,
         "high": df["high"].values,
@@ -217,7 +217,7 @@ def bench_vectorbt(df: pd.DataFrame, n_runs: int) -> dict:
         "median": np.median(times),
         "mean": np.mean(times),
         "total_return": stats.get("Total Return [%]", None),
-        "trades": stats.get("Total Trades", None),
+        "trades": int(stats.get("Total Trades", 0)) * 2,  # vbt counts round-trips; x2 for entry+exit
     }
 
 

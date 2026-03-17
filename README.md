@@ -90,15 +90,11 @@ See the [examples/](examples/) directory for complete runnable strategies:
 
 ## Performance
 
-ManifoldBT's Rust engine is orders of magnitude faster than pure-Python alternatives:
+Run the benchmark yourself:
 
-| Engine | 500K bars | 5M bars |
-|--------|-----------|---------|
-| **ManifoldBT** | ~0.02s | ~0.15s |
-| vectorbt | ~0.8s | ~8s |
-| backtrader | ~12s | ~120s+ |
-
-Run `python benchmarks/bench_vs_competitors.py` to reproduce.
+```bash
+python benchmarks/bench_vs_competitors.py --rows 500000 --runs 5
+```
 
 ## License
 
