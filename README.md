@@ -1,17 +1,25 @@
-# ManifoldBT
+<p align="center">
+  <strong>ManifoldBT</strong><br>
+  Rust-powered backtesting engine for quantitative research
+</p>
 
-**Rust-powered backtesting engine for quantitative research.**
+<p align="center">
+  <a href="https://rustbt.vercel.app">Website</a> &middot;
+  <a href="https://rustbt.vercel.app/docs/documentation.html">Documentation</a> &middot;
+  <a href="examples/">Examples</a>
+</p>
 
-ManifoldBT is a high-performance backtesting framework with a Python DSL that compiles strategies into an optimized Rust expression graph. It is designed for speed, correctness, and ergonomics.
+---
 
-## Highlights
+ManifoldBT compiles Python strategy definitions into an optimized Rust expression graph.
+Write strategies in a fluent Python DSL — execute them on a vectorized Rust engine.
 
-- **Rust core** — vectorized engine handles 1-minute resolution across years of data
-- **Python DSL** — fluent strategy builder with indicators, signals, and sizing
-- **Monte Carlo** — permutation-based simulation for robustness testing
-- **Walk-Forward** — out-of-sample validation with rolling windows
-- **Parameter Sweeps** — 2D heatmaps and 3D surface plots
-- **Portfolio** — multi-strategy portfolio with risk rules and rebalancing
+## Why ManifoldBT
+
+- **Fast** — 500K bars in ~26ms. 161x faster than vectorbt, 1000x+ faster than backtrader.
+- **Expressive** — fluent DSL with 30+ indicators, conditional logic, cross-asset references
+- **Rigorous** — Monte Carlo, walk-forward, parameter sweeps, lookahead detection, exposure diagnostics
+- **Portable** — `pip install`, no Rust toolchain needed. Works on Python 3.9+.
 
 ## Installation
 
@@ -19,7 +27,7 @@ ManifoldBT is a high-performance backtesting framework with a Python DSL that co
 pip install manifoldbt
 ```
 
-With plotting support:
+With all extras (plotting, pandas, polars):
 
 ```bash
 pip install manifoldbt[all]
@@ -32,11 +40,9 @@ import manifoldbt as mbt
 from manifoldbt.indicators import close, ema
 from manifoldbt.helpers import time_range, Interval, Slippage
 
-# Define indicators
 fast = ema(close, 12)
 slow = ema(close, 26)
 
-# Build strategy
 strategy = (
     mbt.Strategy.create("ema_crossover")
     .signal("fast", fast)
@@ -45,8 +51,8 @@ strategy = (
     .size(mbt.col("signal") * mbt.lit(0.25))
 )
 
-# Configure backtest
 start, end = time_range("2022-01-01", "2025-01-01")
+
 config = mbt.BacktestConfig(
     universe=[1],
     time_range_start=start,
@@ -59,7 +65,6 @@ config = mbt.BacktestConfig(
     warmup_bars=30,
 )
 
-# Run
 store = mbt.DataStore(data_root="data", metadata_db="metadata/metadata.sqlite")
 result = mbt.run(strategy, config, store)
 print(result.summary())
@@ -67,34 +72,48 @@ print(result.summary())
 
 ## Examples
 
-See the [examples/](examples/) directory for complete runnable strategies:
-
-| # | Example | Description |
-|---|---------|-------------|
+| # | Example | What it shows |
+|---|---------|---------------|
 | 00 | [Template](examples/00_template.py) | Minimal starting point |
-| 01 | [Trend Following](examples/01_trend_following.py) | EMA crossover with stop-loss and volume filter |
+| 01 | [Trend Following](examples/01_trend_following.py) | EMA crossover, volume filter, stop-loss |
 | 02 | [Mean Reversion](examples/02_mean_reversion.py) | EMA crossover with parameter sweep |
-| 03 | [Multi-Asset Momentum](examples/03_multi_asset_momentum.py) | Cross-asset momentum signals |
+| 03 | [Multi-Asset Momentum](examples/03_multi_asset_momentum.py) | Cross-asset signals |
 | 04 | [Linear Regression](examples/04_linear_regression.py) | Regression-based signal |
-| 05 | [Statistical Arbitrage](examples/05_stat_arb.py) | Pairs trading with spread z-score |
-| 06 | [Full Visualization](examples/06_full_visualization.py) | Complete tearsheet and charts |
+| 05 | [Statistical Arbitrage](examples/05_stat_arb.py) | Pairs trading, spread z-score |
+| 06 | [Full Visualization](examples/06_full_visualization.py) | Tearsheet and charts |
 | 07 | [Walk-Forward](examples/07_walk_forward.py) | Out-of-sample validation |
-| 08 | [2D Sweep Heatmap](examples/08_sweep_2d_heatmap.py) | Parameter grid search |
-| 09 | [3D Surface](examples/09_surface_3d.py) | 3D parameter surface plot |
+| 08 | [2D Sweep](examples/08_sweep_2d_heatmap.py) | Parameter grid heatmap |
+| 09 | [3D Surface](examples/09_surface_3d.py) | Parameter surface plot |
 | 10 | [Monte Carlo](examples/10_monte_carlo.py) | Permutation-based robustness |
 | 11 | [Portfolio](examples/11_portfolio.py) | Multi-strategy portfolio |
 
-## Documentation
-
-- [Strategy Authoring Guide](docs/strategy-authoring.md) — full DSL reference
-
 ## Performance
 
-Run the benchmark yourself:
+EMA(12/26) + RSI(14) on 500K synthetic 1-min bars (median of 5 runs):
 
-```bash
-python benchmarks/bench_vs_competitors.py --rows 500000 --runs 5
-```
+| Engine | Time | vs ManifoldBT |
+|--------|------|---------------|
+| **ManifoldBT** (Rust) | **26 ms** | 1x |
+| vectorbt (NumPy) | 4,094 ms | 161x slower |
+| backtrader (Python) | — | ~1000x slower |
+
+Reproduce: `python benchmarks/bench_vs_competitors.py --rows 500000 --runs 5`
+
+## Documentation
+
+Full API reference, indicator list, configuration guide, and best practices:
+
+**[rustbt.vercel.app/docs/documentation.html](https://rustbt.vercel.app/docs/documentation.html)**
+
+## Community vs Pro
+
+| | Community | Pro |
+|---|---|---|
+| Output resolution | Daily | 1m, 5m, 15m, 1h |
+| Monte Carlo | 1K sims | Unlimited |
+| Walk-Forward | - | Anchored + Rolling |
+| Parameter Stability | - | Yes |
+| Data Connectors | - | Binance, Polygon, DataBento |
 
 ## License
 
