@@ -275,12 +275,18 @@ def _resolve_store(config: BacktestConfig, store: DataStore) -> DataStore:
     if target == current:
         return store
 
+    # Try the target dataset; if it doesn't exist (no active version),
+    # fall back to bars_1m — the engine will resample automatically.
     try:
-        return DataStore(
+        candidate = DataStore(
             data_root=store.data_root(),
             metadata_db=store.metadata_db(),
             dataset=target,
         )
+        # Verify the dataset actually has an active version
+        if candidate.active_version(target) is None:
+            return store
+        return candidate
     except Exception:
         return store
 
