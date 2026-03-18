@@ -1,10 +1,9 @@
-"""Full Visualization Suite -- Bollinger Bands mean-reversion + all plots.
+"""Full Visualization Suite -- RSI mean-reversion + all plots.
 
 Strategy:
-  - Long when price touches lower band (oversold)
-  - Short when price touches upper band (overbought)
-  - Size proportional to distance from middle band
-  - Stop-loss 2%, take-profit 4%
+  - Long when RSI < 30 (oversold)
+  - Short when RSI > 70 (overbought)
+  - Exit long when RSI > 50, exit short when RSI < 50
 
 Demonstrates every plotting function available in manifoldbt.
 
@@ -14,48 +13,30 @@ Usage:
 import os
 import time
 import manifoldbt as mbt
-from manifoldbt.indicators import close, bollinger_bands, ema
+from manifoldbt.indicators import close, rsi
 from manifoldbt.helpers import time_range, Slippage, Interval
 
-upper, middle, lower = bollinger_bands(close, period=20, num_std=2.0)
-trend_ema = ema(close, 100)
-
-# Z-score: how far price is from the mean, normalized by band width
-band_width = upper - lower
-zscore = (close - middle) / (band_width + mbt.lit(1e-12))
-
-# Trend filter: EMA(100) above close = downtrend (no longs), below = uptrend (no shorts)
-is_uptrend = close > trend_ema
-is_downtrend = close < trend_ema
+rsi_14 = rsi(close, 14)
 
 # -- Strategy -----------------------------------------------------------------
-# Entry: touch lower band → long (only in uptrend), touch upper band → short (only in downtrend)
-# Exit:  long exits at upper band, short exits at lower band
-# Size flips to 0 at opposite band = exit
+# Entry: RSI < 30 → long, RSI > 70 → short
+# Exit:  RSI crosses 50
 
-# Long signal: price near lower band + uptrend
-long_entry = (zscore < -0.5) & is_uptrend
-# Short signal: price near upper band + downtrend
-short_entry = (zscore > 0.5) & is_downtrend
+long_entry  = rsi_14 < mbt.lit(30.0)
+short_entry = rsi_14 > mbt.lit(70.0)
 
-# Long exits at upper band (zscore > 0.5), short exits at lower band (zscore < -0.5)
-# When neither entry nor in opposite-band exit zone → flat (0)
 signal = mbt.when(
-    long_entry, 1.0,                           # long
-    mbt.when(short_entry, -1.0, 0.0),         # short / flat
+    long_entry,   1.0,
+    mbt.when(short_entry, -1.0, 0.0),
 )
 
 strategy = (
-    mbt.Strategy.create("Reversion_strategy")
-    .signal("upper", upper)
-    .signal("lower", lower)
-    .signal("ema100", trend_ema)
-    .signal("zscore", zscore)
+    mbt.Strategy.create("RSI_strategy")
+    .signal("rsi14", rsi_14)
     .size(signal * 0.25)
     .describe(
-        "Bollinger Bands mean-reversion: long at lower band, short at upper band, "
-        "exit at opposite band. EMA(100) trend filter — no shorts in uptrend, "
-        "no longs in downtrend."
+        "RSI(14) mean-reversion: long when RSI<30, short when RSI>70, "
+        "exit when RSI crosses 50."
     )
 )
 
@@ -77,7 +58,7 @@ config = mbt.BacktestConfig(
     ),
     fees=mbt.FeeConfig.zero(),
     slippage=Slippage.fixed_bps(0),
-    warmup_bars=25,
+    warmup_bars=20,
 )
 
 # -- Run ----------------------------------------------------------------------
@@ -128,49 +109,46 @@ if __name__ == "__main__":
     mbt.plot.rolling_volatility(result, show=True)
 
     # -- 6. Sweep heatmap 2D -------------------------------------------------
-    # Sweep over BB period and num_std by rebuilding strategies
-    print("\nRunning 2D sweep (BB period × num_std)...")
+    # Sweep over RSI period and oversold threshold
+    print("\nRunning 2D sweep (RSI period × oversold threshold)...")
     t0 = time.perf_counter()
 
-    periods = [10, 15, 20, 30]
-    stds = [1.5, 2.0, 2.5, 3.0]
+    periods    = [7, 10, 14, 21]
+    thresholds = [20, 25, 30, 35]   # oversold level (overbought = 100 - threshold)
     sweep_strategies = []
     for p in periods:
-        for ns in stds:
-            u, m, l = bollinger_bands(close, period=p, num_std=ns)
-            bw = u - l
-            zs = (close - m) / (bw + mbt.lit(1e-12))
-            up = close > trend_ema
-            dn = close < trend_ema
+        for thr in thresholds:
+            r14 = rsi(close, p)
+            ob  = mbt.lit(float(100 - thr))
+            os_ = mbt.lit(float(thr))
             sig = mbt.when(
-                (zs < -0.5) & up, 1.0,
-                mbt.when((zs > 0.5) & dn, -1.0, 0.0),
+                r14 < os_,  1.0,
+                mbt.when(r14 > ob, -1.0, 0.0),
             )
             s = (
-                mbt.Strategy.create(f"bb_p{p}_s{ns}")
-                .signal("zscore", zs)
-                .size(sig * 0.25)
+                mbt.Strategy.create(f"rsi_p{p}_t{thr}")
+                .signal("rsi", r14)
+                .size(sig * 0.05)
                 .stop_loss(pct=2.0)
                 .take_profit(pct=4.0)
             )
             sweep_strategies.append(s)
 
     batch_results = mbt.run_batch_lite(sweep_strategies, config, store)
-    # Build a sweep_result dict compatible with heatmap_2d
     metric_grid = []
     idx = 0
     for _ in periods:
         row = []
-        for _ in stds:
+        for _ in thresholds:
             r = batch_results[idx]
             row.append(r.metrics.get("sharpe", 0.0))
             idx += 1
         metric_grid.append(row)
 
     sweep_result = {
-        "x_param": "num_std",
+        "x_param": "oversold_thr",
         "y_param": "period",
-        "x_values": stds,
+        "x_values": thresholds,
         "y_values": periods,
         "metric": "sharpe",
         "metric_grid": metric_grid,
@@ -179,7 +157,6 @@ if __name__ == "__main__":
     mbt.plot.heatmap_2d(sweep_result, show=True)
 
     # -- 7. Walk-forward validation -------------------------------------------
-    # Manual walk-forward: split 2024 into 5 folds
     print("\nRunning walk-forward (manual folds)...")
     t0 = time.perf_counter()
 
@@ -197,22 +174,20 @@ if __name__ == "__main__":
             universe=ALL_SYMBOLS, time_range_start=ts, time_range_end=te,
             bar_interval=Interval.minutes(60), initial_capital=100_000,
             execution=config.execution, fees=config.fees,
-            slippage=config.slippage, warmup_bars=25,
+            slippage=config.slippage, warmup_bars=20,
         )
         ts2, te2 = time_range(test_start, test_end)
         test_cfg = mbt.BacktestConfig(
             universe=ALL_SYMBOLS, time_range_start=ts2, time_range_end=te2,
             bar_interval=Interval.minutes(60), initial_capital=100_000,
             execution=config.execution, fees=config.fees,
-            slippage=config.slippage, warmup_bars=25,
+            slippage=config.slippage, warmup_bars=20,
         )
         train_r = mbt.run(strategy, train_cfg, store)
-        test_r = mbt.run(strategy, test_cfg, store)
-        train_m = train_r.metrics
-        test_m = test_r.metrics
+        test_r  = mbt.run(strategy, test_cfg, store)
         wf_folds.append({
-            "train_metric": train_m.get("sharpe", 0.0),
-            "test_metric": test_m.get("sharpe", 0.0),
+            "train_metric": train_r.metrics.get("sharpe", 0.0),
+            "test_metric":  test_r.metrics.get("sharpe", 0.0),
         })
 
     wf_result = {
@@ -224,28 +199,23 @@ if __name__ == "__main__":
 
     # -- 8. Monte Carlo -------------------------------------------------------
     print("\nRunning Monte Carlo (1000 paths)...")
-    mc_result = mbt.py_run_monte_carlo(result.raw, 1000, 42)
-    mbt.plot.monte_carlo(mc_result, show=True)
+    mbt.plot.monte_carlo(result, n_simulations=1000, seed=42, show=True)
 
     # -- 9. Parameter stability -----------------------------------------------
-    print("\nRunning stability analysis (BB period)...")
+    print("\nRunning stability analysis (RSI period)...")
     t0 = time.perf_counter()
-    stability_periods = [10, 12, 15, 18, 20, 25, 30, 40]
+    stability_periods = [5, 7, 9, 11, 14, 18, 21, 28]
     stability_metrics = []
     for p in stability_periods:
-        u, m, l = bollinger_bands(close, period=p, num_std=2.0)
-        bw = u - l
-        zs = (close - m) / (bw + mbt.lit(1e-12))
-        up = close > trend_ema
-        dn = close < trend_ema
+        r14 = rsi(close, p)
         sig = mbt.when(
-            (zs < -0.5) & up, 1.0,
-            mbt.when((zs > 0.5) & dn, -1.0, 0.0),
+            r14 < mbt.lit(30.0),  1.0,
+            mbt.when(r14 > mbt.lit(70.0), -1.0, 0.0),
         )
         s = (
-            mbt.Strategy.create(f"bb_stab_{p}")
-            .signal("zscore", zs)
-            .size(sig * 0.25)
+            mbt.Strategy.create(f"rsi_stab_{p}")
+            .signal("rsi", r14)
+            .size(sig * 0.05)
             .stop_loss(pct=2.0)
             .take_profit(pct=4.0)
         )
@@ -254,7 +224,7 @@ if __name__ == "__main__":
 
     import numpy as np
     mean_m = float(np.mean(stability_metrics))
-    std_m = float(np.std(stability_metrics))
+    std_m  = float(np.std(stability_metrics))
     stab_result = {
         "param_name": "period",
         "metric": "sharpe",
