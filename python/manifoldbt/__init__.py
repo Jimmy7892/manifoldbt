@@ -25,6 +25,7 @@ from manifoldbt._native import (
     py_replay as _replay_native,
     py_run_monte_carlo,
     run_portfolio as _run_portfolio_native,
+    py_ingest as _ingest_native,
 )
 from manifoldbt._serde import scalar_value_to_json
 from manifoldbt.config import (
@@ -119,8 +120,10 @@ def _is_pro() -> bool:
 
 def _require_pro(feature: str) -> None:
     """Warn and raise if not Pro. Use _gate_pro for graceful skip."""
+    if _is_pro():
+        return
     _warn_pro(feature)
-    raise LicenseError(f"{feature} — Pro license required")
+    raise LicenseError(f"{feature} -- Pro license required")
 
 
 def _gate_pro(feature: str) -> bool:
@@ -294,6 +297,63 @@ def _cap_output_resolution(config: BacktestConfig) -> BacktestConfig:
     config = copy.deepcopy(config)
     config.output_resolution = None
     return config
+
+
+# ---------------------------------------------------------------------------
+# Data Ingestion
+# ---------------------------------------------------------------------------
+
+def ingest(
+    provider: str,
+    symbol: str,
+    symbol_id: int,
+    start: str,
+    end: str,
+    *,
+    interval: str = "1m",
+    dataset: Optional[str] = None,
+    data_root: str = "data",
+    metadata_db: str = "metadata/metadata.sqlite",
+    exchange: Optional[str] = None,
+    asset_class: str = "crypto_spot",
+) -> DataStore:
+    """Ingest bars from a data provider into the local Parquet store.
+
+    Providers: ``"binance"``, ``"hyperliquid"`` (free), ``"databento"``, ``"massive"`` (Pro).
+
+    Returns a :class:`DataStore` ready for :func:`run`.
+
+    Example::
+
+        store = bt.ingest(
+            provider="databento",
+            symbol="ESH5",
+            symbol_id=1,
+            start="2025-01-01T00:00:00Z",
+            end="2025-01-31T00:00:00Z",
+            dataset="GLBX.MDP3",
+            exchange="CME",
+            asset_class="future",
+        )
+        result = bt.run(strategy, config, store)
+    """
+    _PRO_PROVIDERS = {"databento", "massive"}
+    if provider in _PRO_PROVIDERS:
+        _require_pro(f"Data connector: {provider}")
+
+    return _ingest_native(
+        provider=provider,
+        symbol=symbol,
+        symbol_id=symbol_id,
+        start=start,
+        end=end,
+        interval=interval,
+        dataset=dataset,
+        data_root=data_root,
+        metadata_db=metadata_db,
+        exchange=exchange,
+        asset_class=asset_class,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +729,8 @@ __all__ = [
     "DataStore",
     "Result",
     "SweepResult",
+    # Data ingestion
+    "ingest",
     # Run functions
     "run",
     "run_sweep",

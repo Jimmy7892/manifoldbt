@@ -121,3 +121,16 @@ def py_run_monte_carlo(
     result: BacktestResult,
     mc_config_json: str,
 ) -> Dict[str, Any]: ...
+def py_ingest(
+    provider: str,
+    symbol: str,
+    symbol_id: int,
+    start: str,
+    end: str,
+    interval: str = "1m",
+    dataset: Optional[str] = None,
+    data_root: str = "data",
+    metadata_db: str = "metadata/metadata.sqlite",
+    exchange: Optional[str] = None,
+    asset_class: str = "crypto_spot",
+) -> DataStore: ...
