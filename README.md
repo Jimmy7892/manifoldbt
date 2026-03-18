@@ -113,7 +113,10 @@ Full API reference, indicator list, configuration guide, and best practices:
 | Monte Carlo | 1K sims | Unlimited |
 | Walk-Forward | - | Anchored + Rolling |
 | Parameter Stability | - | Yes |
-| Data Connectors | - | Binance, Polygon, DataBento |
+| Crypto connectors (Binance, Hyperliquid) | Yes | Yes |
+| Databento & Massive connectors | - | Yes |
+| Safety checks (lookahead, exposure) | - | Yes |
+| Tearsheets & export | - | Yes |
 
 ## License
 
