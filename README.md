@@ -4,8 +4,8 @@
 </p>
 
 <p align="center">
-  <a href="https://rustbt.vercel.app">Website</a> &middot;
-  <a href="https://rustbt.vercel.app/docs/documentation.html">Documentation</a> &middot;
+  <a href="https://manifold-bt.com">Website</a> &middot;
+  <a href="https://manifold-bt.com/docs/documentation.html">Documentation</a> &middot;
   <a href="examples/">Examples</a>
 </p>
 
@@ -103,7 +103,7 @@ Reproduce: `python benchmarks/bench_vs_competitors.py --rows 500000 --runs 5`
 
 Full API reference, indicator list, configuration guide, and best practices:
 
-**[rustbt.vercel.app/docs/documentation.html](https://rustbt.vercel.app/docs/documentation.html)**
+**[manifold-bt.com/docs/documentation.html](https://manifold-bt.com/docs/documentation.html)**
 
 ## Community vs Pro
 
