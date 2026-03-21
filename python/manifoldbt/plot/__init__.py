@@ -43,6 +43,7 @@ from manifoldbt.plot.research import (
     heatmap_2d,
     monte_carlo,
     stability,
+    stochastic_paths,
     surface_3d,
     walk_forward,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "stability",
     "correlation_matrix",
     "monte_carlo",
+    "stochastic_paths",
     # Composites
     "tearsheet",
     "research_report",

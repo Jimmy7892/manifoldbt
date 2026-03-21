@@ -560,6 +560,62 @@ def asset(symbol: str) -> AssetRef:
     return AssetRef(symbol)
 
 
+class TimeframeRef:
+    """Reference columns from a higher timeframe.
+
+    The columns are forward-filled: a completed 1h bar's value becomes
+    available at the start of the *next* 1h bar and persists until that
+    bar completes.  This avoids lookahead bias.
+
+    Requires ``extra_timeframes`` in ``BacktestConfig``.
+    """
+
+    __slots__ = ("_tf",)
+
+    def __init__(self, tf: str) -> None:
+        self._tf = tf
+
+    @property
+    def open(self) -> Expr:
+        return col(f"{self._tf}.open")
+
+    @property
+    def high(self) -> Expr:
+        return col(f"{self._tf}.high")
+
+    @property
+    def low(self) -> Expr:
+        return col(f"{self._tf}.low")
+
+    @property
+    def close(self) -> Expr:
+        return col(f"{self._tf}.close")
+
+    @property
+    def volume(self) -> Expr:
+        return col(f"{self._tf}.volume")
+
+    def col(self, name: str) -> Expr:
+        """Reference any column from this timeframe."""
+        return col(f"{self._tf}.{name}")
+
+    def __repr__(self) -> str:
+        return f"TimeframeRef({self._tf!r})"
+
+
+def tf(timeframe: str) -> TimeframeRef:
+    """Reference a higher timeframe for multi-TF strategies.
+
+    Usage::
+
+        h1 = bt.tf("1h")
+        trend = ema(h1.close, 20) > ema(h1.close, 50)
+
+    Requires ``extra_timeframes={"1h": Interval.hours(1)}`` in config.
+    """
+    return TimeframeRef(timeframe)
+
+
 # ---------------------------------------------------------------------------
 # Scan (stateful fold) support
 # ---------------------------------------------------------------------------

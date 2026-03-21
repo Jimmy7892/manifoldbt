@@ -121,3 +121,6 @@ def py_run_monte_carlo(
     result: BacktestResult,
     mc_config_json: str,
 ) -> Dict[str, Any]: ...
+def py_run_stochastic(
+    sim_config_json: str,
+) -> Dict[str, Any]: ...
