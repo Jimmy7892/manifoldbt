@@ -717,3 +717,122 @@ def monte_carlo(
         ax_.set_ylabel("Equity")
         ax_.legend(loc="upper left", fontsize=7, framealpha=0.3)
         return finalize(fig, show=show, save=save)
+
+
+# ── Stochastic Simulation Paths ───────────────────────────────────────────
+
+
+def stochastic_paths(
+    result: Dict[str, Any],
+    *,
+    percentiles: Optional[List[int]] = None,
+    n_sample_paths: int = 50,
+    ax: Optional[Axes] = None,
+    median_color: str = ACCENT,
+    band_color: str = ACCENT,
+    title: Optional[str] = None,
+    figsize: Tuple[float, float] = (12, 5),
+    show: bool = False,
+    save: Optional[Union[str, Path]] = None,
+) -> Figure:
+    """Fan chart for stochastic simulation paths with percentile bands.
+
+    Args:
+        result: Dict returned by ``mbt.run_stochastic(..., store_paths=True)``.
+            Must contain ``paths`` (flat Arrow array) and ``paths_n_steps``.
+        percentiles: Percentile levels for bands. Default ``[5, 25, 50, 75, 95]``.
+        n_sample_paths: Number of individual paths to draw (faded). 0 to disable.
+    """
+    if percentiles is None:
+        percentiles = [5, 25, 50, 75, 95]
+
+    paths_raw = result.get("paths")
+    n_steps = result.get("paths_n_steps")
+    n_paths = result.get("n_paths", 0)
+    model_name = result.get("model_name", "stochastic")
+
+    if paths_raw is None or n_steps is None:
+        raise ValueError(
+            "result has no paths data. Run with store_paths=True."
+        )
+
+    # Reshape flat Arrow/numpy array → (n_paths, n_steps+1)
+    flat = np.asarray(paths_raw, dtype=np.float64)
+    paths = flat.reshape((n_paths, n_steps))
+
+    if title is None:
+        title = f"Stochastic simulation - {model_name} ({n_paths:,} paths)"
+
+    with theme_context():
+        fig, ax_ = get_or_create_ax(ax, figsize)
+
+        x = np.arange(paths.shape[1])
+
+        # Draw sample paths (faded)
+        if n_sample_paths > 0:
+            for i in range(min(n_sample_paths, n_paths)):
+                ax_.plot(x, paths[i], color=band_color, linewidth=0.3, alpha=0.06)
+
+        # Compute percentile bands
+        pct_lines = {pct: np.percentile(paths, pct, axis=0) for pct in percentiles}
+
+        # Fill between symmetric bands
+        for lo, hi in [(0, -1), (1, -2)]:
+            if lo < len(percentiles) and hi < 0 and abs(hi) <= len(percentiles):
+                ax_.fill_between(
+                    x,
+                    pct_lines[percentiles[lo]],
+                    pct_lines[percentiles[hi]],
+                    color=band_color,
+                    alpha=0.08,
+                )
+
+        # Percentile lines
+        s0 = paths[0, 0] if paths.shape[1] > 0 else 100.0
+        for pct in percentiles:
+            final = pct_lines[pct][-1]
+            ret_pct = (final / s0 - 1) * 100
+            if pct == 50:
+                ax_.plot(
+                    x, pct_lines[pct], color=median_color, linewidth=2,
+                    label=f"P{pct} (median): {ret_pct:+.1f}%", zorder=3,
+                )
+            else:
+                ax_.plot(
+                    x, pct_lines[pct], color=band_color, linewidth=0.5,
+                    alpha=0.4, label=f"P{pct}: {ret_pct:+.1f}%",
+                )
+
+        # Stats box
+        final_prices = paths[:, -1]
+        running_peak = np.maximum.accumulate(paths, axis=1)
+        drawdowns = (paths - running_peak) / running_peak
+        max_dd_per_path = drawdowns.min(axis=1) * 100
+
+        dd_p5 = np.percentile(max_dd_per_path, 5)
+        dd_p50 = np.percentile(max_dd_per_path, 50)
+        mean_ret = (np.mean(final_prices) / s0 - 1) * 100
+
+        stats_text = (
+            f"Mean return: {mean_ret:+.1f}%\n"
+            f"Max DD (P5): {dd_p5:.1f}%\n"
+            f"Max DD (P50): {dd_p50:.1f}%"
+        )
+        ax_.text(
+            0.98, 0.95, stats_text,
+            transform=ax_.transAxes, ha="right", va="top",
+            color="#8a8a8a", fontsize=8, fontfamily="monospace",
+            bbox={
+                "boxstyle": "round,pad=0.4",
+                "facecolor": "#111116",
+                "edgecolor": "#1e1e24",
+                "alpha": 0.9,
+            },
+        )
+
+        ax_.margins(x=0.02)
+        ax_.set_title(title)
+        ax_.set_xlabel("Time steps")
+        ax_.set_ylabel("Price")
+        ax_.legend(loc="upper left", fontsize=7, framealpha=0.3)
+        return finalize(fig, show=show, save=save)

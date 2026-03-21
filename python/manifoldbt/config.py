@@ -191,6 +191,11 @@ class BacktestConfig:
     """When True, simulation runs on 1-minute bars regardless of bar_interval.
     Signals are still evaluated at bar_interval resolution (hybrid mode).
     Use for precise SL/TP fills and intraday drawdown tracking. Slower."""
+    extra_timeframes: Dict[str, Any] = field(default_factory=dict)
+    """Additional timeframes for multi-timeframe strategies.
+    Maps labels to Interval dicts. The engine resamples native bars
+    and injects prefixed columns (e.g. "1h.close", "4h.high").
+    Example: ``{"1h": Interval.hours(1), "4h": Interval.hours(4)}``"""
 
     def to_json_dict(self) -> dict:
         d: dict = {
@@ -219,6 +224,8 @@ class BacktestConfig:
             d["symbol_names"] = self.symbol_names
         if self.warmup_bars > 0:
             d["warmup_bars"] = self.warmup_bars
+        if self.extra_timeframes:
+            d["extra_timeframes"] = self.extra_timeframes
         return d
 
     def to_json(self) -> str:

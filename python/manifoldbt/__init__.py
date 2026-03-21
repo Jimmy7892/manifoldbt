@@ -24,6 +24,7 @@ from manifoldbt._native import (
     py_run_stability as _run_stability_native,
     py_replay as _replay_native,
     py_run_monte_carlo,
+    py_run_stochastic as _run_stochastic_native,
     run_portfolio as _run_portfolio_native,
     py_ingest as _ingest_native,
 )
@@ -42,7 +43,7 @@ from manifoldbt.exceptions import (
     LicenseError,
     StrategyError,
 )
-from manifoldbt.expr import AssetRef, Expr, asset, col, hold, lit, param, s, scan, symbol_ref, when
+from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, col, hold, lit, param, s, scan, symbol_ref, tf, when
 from manifoldbt.helpers import (
     ExecutionPrice,
     FillModel,
@@ -75,9 +76,9 @@ def _print_banner():
         if tier == "Pro" and email:
             print(f"manifoldbt v{__version__} | \033[38;5;214mPro\033[0m | {email}")
         else:
-            print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: manifold-bt.com")
+            print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: www.manifoldbt.com")
     except Exception:
-        print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: manifold-bt.com")
+        print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: www.manifoldbt.com")
 
 _print_banner()
 del _print_banner
@@ -102,7 +103,7 @@ def _print_pro_summary() -> None:
         print()
         for w in _pro_warnings:
             print(f"\033[38;5;214m[!] {w} -- Pro feature\033[0m")
-        print("\033[38;5;214m  -> upgrade at manifold-bt.com\033[0m")
+        print("\033[38;5;214m  -> upgrade at www.manifoldbt.com\033[0m")
 
 
 import atexit
@@ -647,6 +648,105 @@ def replay(
 
 
 # ---------------------------------------------------------------------------
+# Stochastic simulation API
+# ---------------------------------------------------------------------------
+
+from manifoldbt.stochastic import StochasticModel
+
+
+def run_stochastic(
+    model,
+    *,
+    s0: float = 100.0,
+    n_paths: int = 1000,
+    n_steps: int = 252,
+    dt: float = 1.0 / 252.0,
+    params: Optional[Dict[str, float]] = None,
+    seed: Optional[int] = None,
+    confidence_levels: Optional[List[float]] = None,
+    store_paths: bool = False,
+    device: str = "cpu",
+    precision: str = "f64",
+) -> Dict[str, Any]:
+    """Run a stochastic simulation via SDE expression DSL.
+
+    All expressions are compiled to native Rust and executed with Rayon
+    parallelism — no Python callback overhead.
+
+    Args:
+        model: Either a preset name (``"gbm"``, ``"heston"``, ``"merton"``,
+            ``"garch_jd"``) or a :class:`StochasticModel` instance.
+        s0: Initial price.
+        n_paths: Number of simulation paths.
+        n_steps: Number of time steps per path.
+        dt: Time step in years (``1/252`` = daily, ``1/252/390`` = minute).
+        params: Parameter overrides (merged with model defaults).
+        seed: RNG seed for reproducibility.
+        confidence_levels: Quantile levels for reporting.
+        store_paths: Whether to store full price paths.
+        device: ``"cpu"`` (default, Rayon parallel) or ``"cuda"``/``"gpu"``
+            (CUDA GPU, requires build with ``--features cuda``).
+        precision: ``"f64"`` (default, double) or ``"f32"`` (float, ~10-20x
+            faster on consumer GPUs, suitable for research/prototyping).
+
+    Returns:
+        Dict with ``final_price``, ``final_return``, ``max_drawdown``,
+        ``annualized_return``, ``annualized_vol`` (each with percentiles,
+        mean, std, min, max), and optionally ``paths`` (Arrow array) +
+        ``paths_n_steps``.
+
+    Example:
+        >>> result = mbt.run_stochastic("gbm", s0=100, n_paths=10000,
+        ...     n_steps=252, dt=1/252, params={"mu": 0.05, "sigma": 0.2})
+        >>> result["final_price"]["mean"]
+        105.12
+
+        >>> model = mbt.StochasticModel(
+        ...     drift="mu", diffusion="sqrt(h)",
+        ...     state_vars={"h": 1e-4},
+        ...     state_update={"h": "omega + alpha * (ret - mu)**2 + beta * h"},
+        ...     params={"mu": 0.08, "omega": 1e-6, "alpha": 0.1, "beta": 0.85},
+        ... )
+        >>> result = mbt.run_stochastic(model, s0=100, n_paths=5000)
+    """
+    config: Dict[str, Any] = {
+        "s0": s0,
+        "n_paths": n_paths,
+        "n_steps": n_steps,
+        "dt": dt,
+        "store_paths": store_paths,
+        "device": device,
+        "precision": precision,
+    }
+
+    if seed is not None:
+        config["rng_seed"] = seed
+
+    if confidence_levels is not None:
+        config["confidence_levels"] = confidence_levels
+
+    if isinstance(model, str):
+        # Preset name
+        config["preset"] = model
+        if params:
+            config["params"] = params
+    elif isinstance(model, StochasticModel):
+        model_dict = model.to_dict()
+        if params:
+            model_dict["params"].update(params)
+        config["model"] = model_dict
+    else:
+        raise TypeError(
+            f"model must be a preset name (str) or StochasticModel, got {type(model).__name__}"
+        )
+
+    try:
+        return _run_stochastic_native(json.dumps(config))
+    except (ValueError, RuntimeError) as exc:
+        raise _classify_error(exc) from exc
+
+
+# ---------------------------------------------------------------------------
 # Portfolio API
 # ---------------------------------------------------------------------------
 
@@ -748,6 +848,7 @@ __all__ = [
     # DSL
     "AssetRef",
     "Expr",
+    "TimeframeRef",
     "asset",
     "col",
     "lit",
@@ -755,6 +856,7 @@ __all__ = [
     "s",
     "scan",
     "symbol_ref",
+    "tf",
     "when",
     # Strategy & config
     "Strategy",
@@ -780,6 +882,9 @@ __all__ = [
     "run_stability",
     "replay",
     "py_run_monte_carlo",
+    # Stochastic simulation
+    "run_stochastic",
+    "StochasticModel",
     # Portfolio
     "Portfolio",
     "run_portfolio",
