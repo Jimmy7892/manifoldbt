@@ -250,7 +250,7 @@ def _resolve_store(config: BacktestConfig, store: DataStore) -> DataStore:
       - **Normal** (default): dataset matches ``bar_interval`` exactly.
         If no exact match, picks the closest smaller dataset and sets
         ``resample_to`` so the engine resamples to bar_interval (no hybrid overhead).
-      - **Accuracy** (``accuracy=True`` on config): always loads ``bars_1m``.
+      - **Precise** (``precise=True`` on config): always loads ``bars_1m``.
         Signals on ``bar_interval``, simulation on 1-min bars.
         Required for precise SL/TP fills.
 
@@ -261,12 +261,17 @@ def _resolve_store(config: BacktestConfig, store: DataStore) -> DataStore:
     except Exception:
         return store
 
+    # ArrowIpcDataStore handles multi-resolution internally via bar_interval —
+    # skip Python-side dataset swapping. Detected by dataset() returning "arrow_ipc".
+    if current == "arrow_ipc":
+        return store
+
     # If user explicitly chose a non-default dataset, respect it
     if current != "bars_1m":
         return store
 
     # Accuracy mode: keep bars_1m (hybrid: signals on bar_interval, sim on 1m)
-    if getattr(config, "accuracy", False):
+    if getattr(config, "precise", False):
         return store
 
     # Normal mode: pick dataset <= bar_interval.
@@ -312,55 +317,118 @@ def _cap_output_resolution(config: BacktestConfig) -> BacktestConfig:
 
 def ingest(
     provider: str,
-    symbol: str,
-    symbol_id: int,
-    start: str,
-    end: str,
+    symbol: Optional[str] = None,
+    symbol_id: Optional[int] = None,
+    start: str = "",
+    end: str = "",
     *,
+    symbols: Optional[list] = None,
     interval: str = "1m",
     dataset: Optional[str] = None,
     data_root: str = "data",
     metadata_db: str = "metadata/metadata.sqlite",
     exchange: Optional[str] = None,
     asset_class: str = "crypto_spot",
+    progress: bool = True,
 ) -> DataStore:
-    """Ingest bars from a data provider into the local Parquet store.
+    """Ingest bars from a data provider into the Arrow IPC store.
 
     Providers: ``"binance"``, ``"hyperliquid"`` (free), ``"databento"``, ``"massive"`` (Pro).
 
     Returns a :class:`DataStore` ready for :func:`run`.
 
-    Example::
+    Example (single symbol)::
 
         store = bt.ingest(
-            provider="databento",
-            symbol="ESH5",
+            provider="binance",
+            symbol="BTCUSDT",
             symbol_id=1,
-            start="2025-01-01T00:00:00Z",
-            end="2025-01-31T00:00:00Z",
-            dataset="GLBX.MDP3",
-            exchange="CME",
-            asset_class="future",
+            start="2020-01-01T00:00:00Z",
+            end="2025-01-01T00:00:00Z",
         )
-        result = bt.run(strategy, config, store)
+
+    Example (multiple symbols)::
+
+        store = bt.ingest(
+            provider="binance",
+            symbols=[("XMRUSDT", 26), ("VETUSDT", 27), ("ZECUSDT", 28)],
+            start="2020-06-01T00:00:00Z",
+            end="2026-03-01T00:00:00Z",
+        )
     """
     _PRO_PROVIDERS = {"databento", "massive"}
     if provider in _PRO_PROVIDERS:
         _require_pro(f"Data connector: {provider}")
 
-    return _ingest_native(
-        provider=provider,
-        symbol=symbol,
-        symbol_id=symbol_id,
-        start=start,
-        end=end,
-        interval=interval,
-        dataset=dataset,
-        data_root=data_root,
-        metadata_db=metadata_db,
-        exchange=exchange,
-        asset_class=asset_class,
-    )
+    # Build list of (symbol, symbol_id) pairs.
+    if symbols is not None:
+        pairs = [(s, sid) for s, sid in symbols]
+    elif symbol is not None and symbol_id is not None:
+        pairs = [(symbol, symbol_id)]
+    else:
+        raise ValueError("provide either symbol+symbol_id or symbols=[(ticker, id), ...]")
+
+    if len(pairs) == 1:
+        return _ingest_single(
+            provider=provider, symbol=pairs[0][0], symbol_id=pairs[0][1],
+            start=start, end=end, interval=interval, dataset=dataset,
+            data_root=data_root, metadata_db=metadata_db,
+            exchange=exchange, asset_class=asset_class, progress=progress,
+        )
+
+    # Multi-symbol: show all symbols with pending ones in grey.
+    display = None
+    callbacks = {}
+    if progress:
+        from manifoldbt._progress import make_multi_progress
+        display, callbacks = make_multi_progress(pairs, provider)
+
+    store = None
+    try:
+        for sym, sid in pairs:
+            cb = callbacks.get(sym) if callbacks else None
+            store = _ingest_native(
+                provider=provider, symbol=sym, symbol_id=sid,
+                start=start, end=end, interval=interval, dataset=dataset,
+                data_root=data_root, metadata_db=metadata_db,
+                exchange=exchange, asset_class=asset_class,
+                progress_cb=cb,
+            )
+    finally:
+        if display is not None:
+            display.stop()
+
+    return store
+
+
+def _ingest_single(
+    *, provider, symbol, symbol_id, start, end, interval, dataset,
+    data_root, metadata_db, exchange, asset_class, progress,
+) -> DataStore:
+    cb = None
+    display = None
+    if progress:
+        from manifoldbt._progress import make_progress_display
+        display, cb = make_progress_display(symbol, provider)
+
+    try:
+        return _ingest_native(
+            provider=provider,
+            symbol=symbol,
+            symbol_id=symbol_id,
+            start=start,
+            end=end,
+            interval=interval,
+            dataset=dataset,
+            data_root=data_root,
+            metadata_db=metadata_db,
+            exchange=exchange,
+            asset_class=asset_class,
+            progress_cb=cb,
+        )
+    finally:
+        if display is not None:
+            display.stop()
 
 
 # ---------------------------------------------------------------------------

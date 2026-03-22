@@ -143,6 +143,24 @@ class Result:
                 if val is not None:
                     lines.append(f"    {label:<18s} {fmt(val):>12s}")
 
+            # Signal quality metrics (MAE/MFE)
+            sq = ts.get("signal_quality")
+            if isinstance(sq, dict):
+                lines.append("")
+                lines.append("  Signal Quality")
+                lines.append("  " + "-" * 38)
+                _sq_fmt = [
+                    ("Avg MAE", "avg_mae", _pct),
+                    ("Avg MFE", "avg_mfe", _pct),
+                    ("Edge Ratio", "edge_ratio", _f2),
+                    ("Entry Efficiency", "avg_entry_efficiency", _pct),
+                    ("Exit Efficiency", "avg_exit_efficiency", _pct),
+                ]
+                for label, key, fmt in _sq_fmt:
+                    val = sq.get(key)
+                    if val is not None:
+                        lines.append(f"    {label:<18s} {fmt(val):>12s}")
+
         return "\n".join(lines)
 
     def profile_summary(self) -> str:
