@@ -66,26 +66,32 @@ def _load_bars(
     start_dt = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc)
     end_dt = datetime.fromtimestamp(end_ns / 1e9, tz=timezone.utc)
 
-    tables = []
-    day = start_dt.date()
-    end_day = end_dt.date()
-    while day <= end_day:
-        path = (
-            data_root
-            / "bars_1m"
-            / str(symbol_id)
-            / str(day.year)
-            / f"{day.month:02d}"
-            / f"{day.day:02d}.parquet"
-        )
-        if path.exists():
-            tables.append(pq.read_table(str(path)))
-        day += timedelta(days=1)
+    # Try Arrow IPC file first (new layout), then Parquet partitions (legacy)
+    arrow_dir = Path(store.data_root()) / "mega" if not str(data_root).endswith("mega") else data_root
+    ipc_path = arrow_dir / "bars_1m" / f"{symbol_id}.arrow"
+    if ipc_path.exists():
+        table = pa.ipc.open_file(str(ipc_path)).read_all()
+    else:
+        tables = []
+        day = start_dt.date()
+        end_day = end_dt.date()
+        while day <= end_day:
+            path = (
+                data_root
+                / "bars_1m"
+                / str(symbol_id)
+                / str(day.year)
+                / f"{day.month:02d}"
+                / f"{day.day:02d}.parquet"
+            )
+            if path.exists():
+                tables.append(pq.read_table(str(path)))
+            day += timedelta(days=1)
 
-    if not tables:
-        return {}
+        if not tables:
+            return {}
 
-    table = pa.concat_tables(tables)
+        table = pa.concat_tables(tables)
 
     # Filter to time range
     ts_col = table.column("timestamp").cast(pa.int64()).to_numpy(zero_copy_only=False)

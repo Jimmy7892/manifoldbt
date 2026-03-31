@@ -128,9 +128,14 @@ def rsi(source: Expr, period=14) -> Expr:
     return source.rsi(period)
 
 
-def stoch_k(period: int = 14) -> Expr:
-    """Stochastic %K oscillator (native Rust, uses high/low/close)."""
-    return Expr("StochK", high, low, close, period)
+def stoch_k(period: int = 14, *, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
+    """Stochastic %K oscillator (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns (e.g. exo columns).
+                 Defaults to native bar columns.
+    """
+    return Expr("StochK", h or high, l or low, c or close, period)
 
 
 def stochastic_k(period: int = 14, source: Expr = None) -> Expr:
@@ -144,19 +149,32 @@ def stochastic_k(period: int = 14, source: Expr = None) -> Expr:
     return (c - lowest) / (highest - lowest + lit(1e-12)) * lit(100.0)
 
 
-def williams_r(period: int = 14) -> Expr:
-    """Williams %R oscillator (native Rust, uses high/low/close)."""
-    return Expr("WilliamsR", high, low, close, period)
+def williams_r(period: int = 14, *, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
+    """Williams %R oscillator (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
+    """
+    return Expr("WilliamsR", h or high, l or low, c or close, period)
 
 
-def cci(period: int = 20) -> Expr:
-    """Commodity Channel Index (native Rust, uses high/low/close)."""
-    return Expr("Cci", high, low, close, period)
+def cci(period: int = 20, *, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
+    """Commodity Channel Index (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
+    """
+    return Expr("Cci", h or high, l or low, c or close, period)
 
 
-def adx(period: int = 14) -> Expr:
-    """Average Directional Index (native Rust, uses high/low/close)."""
-    return Expr("Adx", high, low, close, period)
+def adx(period: int = 14, *, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
+    """Average Directional Index (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns (e.g. exo columns).
+                 Defaults to native bar columns.
+    """
+    return Expr("Adx", h or high, l or low, c or close, period)
 
 
 # ---------------------------------------------------------------------------
@@ -183,39 +201,59 @@ def bollinger_width(source: Expr, period: int = 20, num_std: float = 2.0) -> Exp
     return source.bollinger_width(period, num_std)
 
 
-def atr(period: int = 14) -> Expr:
+def atr(period: int = 14, *, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
     """Average True Range (native Rust, Wilder's smoothing, single-pass O(n)).
 
-    Uses ``high``, ``low``, ``close`` columns from the bar data.
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
     """
-    return Expr("Atr", high, low, close, period)
+    return Expr("Atr", h or high, l or low, c or close, period)
 
 
-def true_range() -> Expr:
-    """True Range (native Rust, uses high/low/close)."""
-    return Expr("TrueRange", high, low, close)
+def true_range(*, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
+    """True Range (native Rust).
 
-
-def natr(period: int = 14) -> Expr:
-    """Normalized ATR (native Rust, uses high/low/close)."""
-    return Expr("Natr", high, low, close, period)
-
-
-def keltner_channels(period: int = 20, multiplier: float = 1.5) -> Tuple[Expr, Expr, Expr]:
-    """Keltner Channels (native Rust, uses high/low/close).
-
-    Returns:
-        ``(upper, middle, lower)`` — three ``Expr`` objects.
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
     """
-    upper = Expr("KeltnerUpper", high, low, close, period, multiplier)
-    middle = close.ewm_mean(float(period))
-    lower = Expr("KeltnerLower", high, low, close, period, multiplier)
+    return Expr("TrueRange", h or high, l or low, c or close)
+
+
+def natr(period: int = 14, *, h: Expr = None, l: Expr = None, c: Expr = None) -> Expr:
+    """Normalized ATR (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
+    """
+    return Expr("Natr", h or high, l or low, c or close, period)
+
+
+def keltner_channels(
+    period: int = 20, multiplier: float = 1.5,
+    *, h: Expr = None, l: Expr = None, c: Expr = None,
+) -> Tuple[Expr, Expr, Expr]:
+    """Keltner Channels (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
+    """
+    _h, _l, _c = h or high, l or low, c or close
+    upper = Expr("KeltnerUpper", _h, _l, _c, period, multiplier)
+    middle = _c.ewm_mean(float(period))
+    lower = Expr("KeltnerLower", _h, _l, _c, period, multiplier)
     return upper, middle, lower
 
 
-def supertrend(period: int = 10, multiplier: float = 3.0) -> Expr:
-    """SuperTrend indicator (native Rust, uses high/low/close)."""
-    return Expr("SuperTrend", high, low, close, period, multiplier)
+def supertrend(
+    period: int = 10, multiplier: float = 3.0,
+    *, h: Expr = None, l: Expr = None, c: Expr = None,
+) -> Expr:
+    """SuperTrend indicator (native Rust).
+
+    Args:
+        h, l, c: Custom high/low/close columns. Defaults to native bar columns.
+    """
+    return Expr("SuperTrend", h or high, l or low, c or close, period, multiplier)
 
 
 # ---------------------------------------------------------------------------
@@ -271,19 +309,31 @@ def obv(source: Expr = None, vol: Expr = None) -> Expr:
                 vol if vol is not None else volume)
 
 
-def vwap() -> Expr:
-    """Volume Weighted Average Price (native Rust, uses high/low/close/volume)."""
-    return Expr("Vwap", high, low, close, volume)
+def vwap(*, h: Expr = None, l: Expr = None, c: Expr = None, v: Expr = None) -> Expr:
+    """Volume Weighted Average Price (native Rust).
+
+    Args:
+        h, l, c, v: Custom high/low/close/volume columns. Defaults to native bar columns.
+    """
+    return Expr("Vwap", h or high, l or low, c or close, v or volume)
 
 
-def ad_line() -> Expr:
-    """Accumulation/Distribution Line (native Rust, uses high/low/close/volume)."""
-    return Expr("AdLine", high, low, close, volume)
+def ad_line(*, h: Expr = None, l: Expr = None, c: Expr = None, v: Expr = None) -> Expr:
+    """Accumulation/Distribution Line (native Rust).
+
+    Args:
+        h, l, c, v: Custom high/low/close/volume columns. Defaults to native bar columns.
+    """
+    return Expr("AdLine", h or high, l or low, c or close, v or volume)
 
 
-def mfi(period: int = 14) -> Expr:
-    """Money Flow Index (native Rust, uses high/low/close/volume)."""
-    return Expr("Mfi", high, low, close, volume, period)
+def mfi(period: int = 14, *, h: Expr = None, l: Expr = None, c: Expr = None, v: Expr = None) -> Expr:
+    """Money Flow Index (native Rust).
+
+    Args:
+        h, l, c, v: Custom high/low/close/volume columns. Defaults to native bar columns.
+    """
+    return Expr("Mfi", h or high, l or low, c or close, v or volume, period)
 
 
 # ---------------------------------------------------------------------------

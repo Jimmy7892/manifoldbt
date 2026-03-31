@@ -43,7 +43,7 @@ from manifoldbt.exceptions import (
     LicenseError,
     StrategyError,
 )
-from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, col, hold, lit, param, s, scan, symbol_ref, tf, when
+from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, col, exo, hold, lit, param, s, scan, symbol_ref, tf, when
 from manifoldbt.helpers import (
     ExecutionPrice,
     FillModel,
@@ -120,11 +120,12 @@ def _is_pro() -> bool:
 
 
 def _require_pro(feature: str) -> None:
-    """Warn and raise if not Pro. Use _gate_pro for graceful skip."""
+    """Print Pro warning and exit cleanly if not Pro."""
     if _is_pro():
         return
-    _warn_pro(feature)
-    raise LicenseError(f"{feature} -- Pro license required")
+    print(f"\n\033[38;5;214m[!] {feature} -- Pro feature\033[0m")
+    print("\033[38;5;214m  -> upgrade at www.manifoldbt.com\033[0m")
+    raise SystemExit(0)
 
 
 def _gate_pro(feature: str) -> bool:
@@ -151,24 +152,126 @@ def _classify_error(exc: Exception) -> Exception:
 # Config preparation (symbol resolution + strategy orders merge)
 # ---------------------------------------------------------------------------
 
-def _prepare_config(config: BacktestConfig, strategy: Strategy, store: DataStore) -> BacktestConfig:
-    """Prepare config for execution: resolve symbols and merge strategy orders."""
-    cfg = config
+_AC_SUFFIX_MAP = {
+    "spot": "CryptoSpot", "perp": "CryptoPerpetual",
+    "future": "Future", "equity": "Equity",
+    "option": "EquityOption", "fx": "Forex",
+    "index": "Index",
+}
 
-    # Resolve string symbols in universe
-    has_strings = any(isinstance(s, str) for s in cfg.universe)
-    has_strategy_orders = hasattr(strategy, '_orders') and strategy._orders
+def _resolve_normalized(sym: str, provider: str, store) -> int:
+    """Resolve a normalized symbol name like 'BTC-USDT:perp' on a provider to SymbolId.
 
-    if not has_strings and not has_strategy_orders:
-        return cfg
+    Tries: 1) normalized parse → metadata lookup by (base, quote, asset_class, provider)
+           2) fallback to raw ticker match
+    """
+    import sqlite3, os
 
-    cfg = copy.deepcopy(cfg)
+    # Parse normalized name: "BTC-USDT:perp" → base=BTC, quote=USDT, ac=CryptoPerpetual
+    if ":" in sym:
+        pair, suffix = sym.rsplit(":", 1)
+        ac_db = _AC_SUFFIX_MAP.get(suffix)
+    else:
+        pair, ac_db = sym, None
 
-    if has_strings:
-        cfg.universe = resolve_universe(cfg.universe, store)
+    if "-" in pair:
+        base, quote = pair.split("-", 1)
+    else:
+        base, quote = pair, ""
+
+    if ac_db:
+        # Try metadata lookup by (base, quote, asset_class, provider)
+        meta_db = store.metadata_db()
+        conn = sqlite3.connect(meta_db)
+        row = conn.execute(
+            "SELECT id FROM symbols WHERE base_currency=? COLLATE NOCASE "
+            "AND quote_currency=? COLLATE NOCASE AND asset_class=? "
+            "AND exchange=? COLLATE NOCASE ORDER BY id DESC LIMIT 1",
+            (base, quote, ac_db, provider.upper()),
+        ).fetchone()
+        conn.close()
+        if row:
+            return row[0]
+
+    # Fallback: try raw ticker match
+    try:
+        return store.resolve_symbol(sym)
+    except Exception:
+        raise ValueError(
+            f"Symbol '{sym}' not found on provider '{provider}'. "
+            f"Searched: base={base}, quote={quote}, class={ac_db}"
+        )
+
+
+def _resolve_source_dict(source, store):
+    """Resolve a signal/execution source dict → list of (provider, norm_sym, symbol_id, raw_ticker).
+
+    Returns the raw ticker from metadata (what the files are named on disk).
+    """
+    if isinstance(source, dict):
+        import sqlite3
+        conn = sqlite3.connect(store.metadata_db())
+        resolved = []
+        for provider, symbols in source.items():
+            for sym in symbols:
+                sid = _resolve_normalized(sym, provider, store)
+                # Get raw ticker from metadata
+                row = conn.execute("SELECT ticker FROM symbols WHERE id=?", (sid,)).fetchone()
+                raw_ticker = row[0] if row else sym
+                resolved.append((provider, sym, sid, raw_ticker))
+        conn.close()
+        return resolved
+    return None
+
+
+def _prepare_config(config: BacktestConfig, strategy, store: DataStore) -> BacktestConfig:
+    """Prepare config for execution: resolve symbols, convert deprecated fields."""
+    cfg = copy.deepcopy(config)
+
+    # --- Dict universe: {"binance": ["BTC-USDT:perp"], "onchain": ["hashrate"]} ---
+    if isinstance(cfg.universe, dict):
+        # Cross-exchange (multiple providers) is a Pro feature.
+        if len(cfg.universe) > 1:
+            _require_pro("Cross-exchange backtesting")
+
+        resolved_universe = []
+        qualified_names = {}  # "binance:BTC-USDT:perp" → SymbolId
+
+        for provider, symbols in cfg.universe.items():
+            for sym in symbols:
+                sid = _resolve_normalized(sym, provider, store)
+                resolved_universe.append(sid)
+                qualified = f"{provider}:{sym}"
+                qualified_names[qualified] = sid
+
+        cfg.universe = resolved_universe
+        cfg.symbol_names = qualified_names
+
+        # Clear deprecated fields
+        cfg.signal_source = None
+        cfg.execution_source = None
+        cfg.pair_map = {}
+        cfg.exo_sources = {}
+        cfg.provider = None
+
+    # --- Legacy list universe: [1, 2, 3] or ["BTC-USD", "ETH-USD"] ---
+    elif cfg.universe:
+        if any(isinstance(s, str) for s in cfg.universe):
+            cfg.universe = resolve_universe(cfg.universe, store, cfg.symbol_names)
+
+        # Legacy exo_sources resolution
+        if cfg.exo_sources and any(isinstance(k, str) for k in cfg.exo_sources):
+            resolved = {}
+            for key, val in cfg.exo_sources.items():
+                sid = store.resolve_symbol(key) if isinstance(key, str) else key
+                resolved[sid] = val
+            cfg.exo_sources = resolved
+
+        if cfg.provider and not cfg.signal_source:
+            cfg.signal_source = cfg.provider
 
     # Merge orders from strategy into execution config
-    if has_strategy_orders:
+    if strategy and hasattr(strategy, '_orders') and strategy._orders:
         if cfg.execution.orders is None:
             cfg.execution.orders = OrderConfig()
         for key, val in strategy._orders.items():
@@ -519,6 +622,7 @@ def run_batch(
         One :class:`Result` per strategy, in input order.
     """
     try:
+        config = _prepare_config(config, None, store)
         config = _cap_output_resolution(config)
         store = _resolve_store(config, store)
         strategy_jsons = [strat.to_json() for strat in strategies]
@@ -556,6 +660,7 @@ def run_batch_lite(
         One :class:`BatchResultLite` per strategy (name, metrics, equity, trade_count).
     """
     try:
+        config = _prepare_config(config, None, store)
         config = _cap_output_resolution(config)
         store = _resolve_store(config, store)
         strategy_jsons = [strat.to_json() for strat in strategies]
@@ -640,6 +745,7 @@ def run_walk_forward(
     """
     if not _gate_pro("Walk-forward optimization"):
         return {"folds": [], "best_params_per_fold": []}
+    config = _prepare_config(config, strategy, store)
     wf_json = json.dumps(_convert_param_grid_in_config(wf_config))
     return _run_walk_forward_native(strategy.to_json(), wf_json, config.to_json(), store)
 
@@ -667,6 +773,7 @@ def run_sweep_2d(
     Returns:
         Dict with ``metric_grid`` (2D list), ``x_values``, ``y_values``, etc.
     """
+    config = _prepare_config(config, strategy, store)
     sweep_json = json.dumps(_convert_scalar_values_in_sweep(sweep_config))
     return _run_sweep_2d_native(strategy.to_json(), sweep_json, config.to_json(), store)
 
@@ -692,6 +799,7 @@ def run_stability(
     Returns:
         Dict with ``stability_score``, ``metric_values``, ``mean_metric``, ``std_metric``.
     """
+    config = _prepare_config(config, strategy, store)
     stab_json = json.dumps(_convert_scalar_values_in_stability(stability_config))
     return _run_stability_native(strategy.to_json(), stab_json, config.to_json(), store)
 
@@ -835,6 +943,7 @@ def run_portfolio(
         breakdown via ``result.per_strategy``.
     """
     try:
+        config = _prepare_config(config, None, store)
         raw_combined, per_strategy_info = _run_portfolio_native(
             portfolio.to_json(),
             config.to_json(),
@@ -893,6 +1002,105 @@ def _convert_scalar_values_in_stability(stability_config: Dict[str, Any]) -> Dic
 
 
 # ---------------------------------------------------------------------------
+# Exogenous data registration
+# ---------------------------------------------------------------------------
+
+def register_exo(
+    name: str,
+    data,
+    store: Optional["DataStore"] = None,
+    data_root: str = "data",
+    provider: Optional[str] = None,
+    timeframe: str = "1d",
+):
+    """Register an exogenous data series for use in strategies.
+
+    Without ``provider``: writes to ``{root}/exo/{name}.arrow`` (legacy layout).
+    With ``provider``: writes to ``{root}/{provider}/{timeframe}/{name}.arrow``
+    (unified layout, used for cross-exchange data).
+
+    Args:
+        name: Series identifier (e.g. ``"hashrate"``, ``"BTCUSDT"``).
+        data: A pandas/polars DataFrame or dict with a ``"timestamp"`` column
+              and one or more float value columns.
+        store: Optional DataStore to infer ``data_root`` from.
+        data_root: Root data directory (default ``"data"``).
+        provider: Provider name for unified layout (e.g. ``"binance"``).
+        timeframe: Timeframe label (e.g. ``"1d"``, ``"1h"``). Default ``"1d"``.
+
+    Example::
+
+        # Legacy (non-symbol exo like hashrate)
+        bt.register_exo("hashrate", df)
+
+        # Unified layout (cross-exchange)
+        bt.register_exo("BTCUSDT", df, provider="binance", timeframe="1h")
+    """
+    import pyarrow as pa
+    from pathlib import Path
+
+    # Resolve data root
+    if store is not None:
+        root = Path(store.data_root()) / "mega"
+    else:
+        root = Path(data_root) / "mega"
+
+    if provider:
+        # Unified layout: {root}/{provider}/{timeframe}/{name}.arrow
+        target_dir = root / provider / timeframe
+    else:
+        # Legacy layout: {root}/exo/{name}.arrow
+        target_dir = root / "exo"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Convert to Arrow Table
+    if hasattr(data, "to_arrow"):
+        # Polars DataFrame
+        table = data.to_arrow()
+    elif hasattr(data, "columns"):
+        # Pandas DataFrame
+        import pandas as pd
+        table = pa.Table.from_pandas(data)
+    elif isinstance(data, dict):
+        table = pa.table(data)
+    else:
+        raise TypeError(f"Unsupported data type: {type(data)}. Use a pandas/polars DataFrame or dict.")
+
+    # Ensure timestamp is TimestampNanosecond(UTC)
+    ts_idx = table.schema.get_field_index("timestamp")
+    if ts_idx < 0:
+        raise ValueError("Data must have a 'timestamp' column")
+
+    ts_type = table.schema.field(ts_idx).type
+    if not pa.types.is_timestamp(ts_type):
+        raise ValueError(f"'timestamp' column must be a timestamp type, got {ts_type}")
+
+    # Cast to nanos UTC if needed
+    target_type = pa.timestamp("ns", tz="UTC")
+    if ts_type != target_type:
+        ts_col = table.column(ts_idx).cast(target_type)
+        table = table.set_column(ts_idx, pa.field("timestamp", target_type), ts_col)
+
+    # Cast value columns to float64
+    for i, field in enumerate(table.schema):
+        if field.name == "timestamp":
+            continue
+        if field.type != pa.float64():
+            table = table.set_column(
+                i, pa.field(field.name, pa.float64()), table.column(i).cast(pa.float64())
+            )
+
+    # Write Arrow IPC
+    path = target_dir / f"{name}.arrow"
+    writer = pa.ipc.new_file(str(path), table.schema)
+    writer.write_table(table)
+    writer.close()
+
+    print(f"Registered exo '{name}': {table.num_rows} rows, "
+          f"columns={[f.name for f in table.schema if f.name != 'timestamp']} -> {path}")
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -919,6 +1127,7 @@ __all__ = [
     "TimeframeRef",
     "asset",
     "col",
+    "exo",
     "lit",
     "param",
     "s",
@@ -956,6 +1165,8 @@ __all__ = [
     # Portfolio
     "Portfolio",
     "run_portfolio",
+    # Exogenous data
+    "register_exo",
     # Version
     "__version__",
     # Indicators (submodule)

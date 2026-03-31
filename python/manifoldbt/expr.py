@@ -5,7 +5,7 @@ Builds an expression tree that serializes to JSON matching the Rust
 """
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from manifoldbt._serde import scalar_value_to_json
 
@@ -516,6 +516,33 @@ def when(condition: Expr, true_value: Any = 1.0, false_value: Any = float("nan")
     Omit false_value to hold current position.
     """
     return Expr("IfElse", condition, _coerce(true_value), _coerce(false_value))
+
+
+def exo(name: str, column: Optional[str] = None) -> Expr:
+    """Reference an exogenous data column.
+
+    Exogenous data is registered via ``bt.register_exo()`` and declared
+    in ``BacktestConfig(exo_data=[...])``.
+
+    Args:
+        name: Exo series name (e.g. ``"hashrate"``).
+        column: Column name within the exo series. If ``None``, defaults
+                to ``name`` (convenient when the series has a single value column
+                with the same name as the series).
+
+    Returns:
+        An ``Expr`` referencing ``col("exo.{name}.{column}")``.
+
+    Example::
+
+        # Single-column shorthand
+        signal = rsi(exo("hashrate"), 14) > 70
+
+        # Multi-column explicit
+        signal = exo("onchain", "active_addresses") > 1_000_000
+    """
+    col_name = column if column is not None else name
+    return col(f"exo.{name}.{col_name}")
 
 
 def symbol_ref(symbol: str, column: str) -> Expr:

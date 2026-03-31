@@ -187,8 +187,8 @@ class BacktestConfig:
     Allows indicators (EMA, SMA, etc.) to stabilise. During warmup,
     equity tracking runs but no trades are generated.
     Set to at least the longest indicator window (e.g. 25 for EMA(25))."""
-    precise: bool = False
-    """When True, always load finest resolution (1m) regardless of bar_interval.
+    accuracy: bool = False
+    """When True, simulation runs on 1-minute bars regardless of bar_interval.
     Signals are still evaluated at bar_interval resolution (hybrid mode).
     Use for precise SL/TP fills and intraday drawdown tracking. Slower."""
     extra_timeframes: Dict[str, Any] = field(default_factory=dict)
@@ -196,6 +196,27 @@ class BacktestConfig:
     Maps labels to Interval dicts. The engine resamples native bars
     and injects prefixed columns (e.g. "1h.close", "4h.high").
     Example: ``{"1h": Interval.hours(1), "4h": Interval.hours(4)}``"""
+    exo_data: List[str] = field(default_factory=list)
+    """Exogenous data series names to inject into signal evaluation.
+    Each name corresponds to an ``exo/{name}/`` directory in the data store
+    (written via ``bt.register_exo()``). Columns are ASOF-joined onto
+    bar timestamps and accessible as ``col("exo.{name}.{column}")``.
+    Example: ``["hashrate", "fear_greed"]``"""
+    signal_source: Any = None
+    """Signal data source. Dict mapping provider → list of normalized symbols.
+    Example: ``{"binance": ["BTC-USDT:perp", "ETH-USDT:perp"]}``
+    Also accepts a string (single provider for all symbols) for backward compat."""
+    execution_source: Any = None
+    """Execution data source. Same format as ``signal_source``.
+    Fill prices come from this source. When absent, same as ``signal_source``.
+    Example: ``{"dydx": ["BTC-USD:perp", "ETH-USD:perp"]}``"""
+    pair_map: Dict[str, str] = field(default_factory=dict)
+    """Explicit mapping from signal symbol to execution symbol.
+    Required when signal and execution have different tickers.
+    Example: ``{"BTC-USDT:perp": "BTC-USD:perp"}``"""
+    # Deprecated — kept for backward compat
+    provider: Optional[str] = None
+    exo_sources: Dict = field(default_factory=dict)
 
     def to_json_dict(self) -> dict:
         d: dict = {
@@ -224,10 +245,23 @@ class BacktestConfig:
             d["symbol_names"] = self.symbol_names
         if self.warmup_bars > 0:
             d["warmup_bars"] = self.warmup_bars
-        if self.precise:
+        if self.accuracy:
             d["precise"] = True
         if self.extra_timeframes:
             d["extra_timeframes"] = self.extra_timeframes
+        if self.exo_data:
+            d["exo_data"] = self.exo_data
+        if self.signal_source:
+            d["signal_source"] = self.signal_source
+        if self.execution_source:
+            d["execution_source"] = self.execution_source
+        # Deprecated fields (backward compat)
+        if self.provider:
+            d["provider"] = self.provider
+        if self.exo_sources:
+            d["exo_sources"] = {
+                str(sid): list(src) for sid, src in self.exo_sources.items()
+            }
         return d
 
     def to_json(self) -> str:
@@ -237,12 +271,14 @@ class BacktestConfig:
 def resolve_universe(
     universe: List[Union[int, str]],
     store: Any,
+    symbol_names: Optional[Dict[str, int]] = None,
 ) -> List[int]:
     """Resolve a mixed list of symbol IDs and ticker names to integer IDs.
 
     Args:
         universe: List of integer IDs or string ticker names.
         store: A ``DataStore`` instance (must have ``resolve_symbol()``).
+        symbol_names: Optional name-to-ID mapping (checked before store).
 
     Returns:
         List of integer symbol IDs.
@@ -256,12 +292,15 @@ def resolve_universe(
         if isinstance(item, int):
             result.append(item)
         elif isinstance(item, str):
-            if store is None:
+            if symbol_names and item in symbol_names:
+                result.append(symbol_names[item])
+            elif store is None:
                 raise TypeError(
                     f"DataStore required to resolve symbol name {item!r}. "
                     f"Pass integer IDs or provide a store."
                 )
-            result.append(store.resolve_symbol(item))
+            else:
+                result.append(store.resolve_symbol(item))
         else:
             result.append(int(item))
     return result

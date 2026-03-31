@@ -43,7 +43,11 @@ strategy = (
 # -- Config -------------------------------------------------------------------
 start, end = time_range("2021-01-01", "2026-01-01")
 
-ALL_SYMBOLS = list(range(1, 23))  # 22 symbols: BTCUSDT to ARBUSDT
+ALL_SYMBOLS = {"binance": [
+    "BTC-USDT:perp", "ETH-USDT:perp", "LTC-USDT:perp", "BNB-USDT:perp",
+    "DOT-USDT:perp", "XRP-USDT:perp", "ADA-USDT:perp", "LINK-USDT:perp",
+    "DOGE-USDT:perp", "AVAX-USDT:perp",
+]}
 
 config = mbt.BacktestConfig(
     universe=ALL_SYMBOLS,
@@ -65,9 +69,11 @@ config = mbt.BacktestConfig(
 if __name__ == "__main__":
     root = os.path.join(os.path.dirname(__file__), "..")
     os.makedirs(os.path.join(root, "output"), exist_ok=True)
+    data_root = os.path.abspath(os.path.join(root, "data"))
     store = mbt.DataStore(
-        data_root=os.path.abspath(os.path.join(root, "data")),
+        data_root=data_root,
         metadata_db=os.path.abspath(os.path.join(root, "metadata", "metadata.sqlite")),
+        arrow_dir=os.path.join(data_root, "mega"),
     )
 
     # -- 1. Single backtest --------------------------------------------------
@@ -82,15 +88,15 @@ if __name__ == "__main__":
     print("Generating tearsheet...")
     mbt.plot.tearsheet(
         result, show=True,
-        save=os.path.join(root, "output", "tearsheet.png"),
+        save=os.path.join(root, "output", "tearsheet.html"),
     )
 
     # -- 3. Summary 3-panel ---------------------------------------------------
     mbt.plot.summary(result, show=True)
 
-    # -- 4. Candlestick chart (symbol_id=1 matches universe) ----------------
+    # -- 4. Candlestick chart (first symbol in universe) --------------------
     mbt.plot.chart(
-        result, store, symbol_id=1,
+        result, store, symbol_id=201,
         emas=[10, 25],
         smas=[50],
         n_bars=120,

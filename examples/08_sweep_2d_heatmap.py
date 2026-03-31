@@ -31,7 +31,7 @@ strategy = (
 start, end = time_range("2021-01-01", "2026-01-01")
 
 config = mbt.BacktestConfig(
-    universe=[1],
+    universe={"binance": ["BTC-USDT:perp"]},
     time_range_start=start,
     time_range_end=end,
     bar_interval=Interval.hours(1),
@@ -49,9 +49,11 @@ config = mbt.BacktestConfig(
 # -- Run ----------------------------------------------------------------------
 if __name__ == "__main__":
     root = os.path.join(os.path.dirname(__file__), "..")
+    data_root = os.path.abspath(os.path.join(root, "data"))
     store = mbt.DataStore(
-        data_root=os.path.abspath(os.path.join(root, "data")),
+        data_root=data_root,
         metadata_db=os.path.abspath(os.path.join(root, "metadata", "metadata.sqlite")),
+        arrow_dir=os.path.join(data_root, "mega"),
     )
 
     fast_values = list(range(5, 1000, 5))

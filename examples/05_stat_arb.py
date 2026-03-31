@@ -15,7 +15,7 @@ from manifoldbt.indicators import close, kalman
 from manifoldbt.helpers import time_range, Slippage, Interval
 
 # -- Spread construction ------------------------------------------------------
-pair_close = mbt.symbol_ref("ETHUSDT", "close")
+pair_close = mbt.symbol_ref("binance:ETH-USDT:perp", "close")
 ratio = close / (pair_close + mbt.lit(1e-12))
 
 # -- Kalman equilibrium -------------------------------------------------------
@@ -41,7 +41,7 @@ strategy = (
 start, end = time_range("2022-01-01", "2026-01-01")
 
 config = mbt.BacktestConfig(
-    universe=[1, 2, 5],  # BTC, ETH, BNB
+    universe={"binance": ["BTC-USDT:perp", "ETH-USDT:perp", "BNB-USDT:perp"]},  # BTC, ETH, BNB
     time_range_start=start,
     time_range_end=end,
     bar_interval=Interval.hours(24),
@@ -53,15 +53,16 @@ config = mbt.BacktestConfig(
     fees=mbt.FeeConfig.binance_perps(),
     slippage=Slippage.fixed_bps(2),
     warmup_bars=30,
-    symbol_names={"BTCUSDT": 1, "ETHUSDT": 2, "BNBUSDT": 5},
 )
 
 # -- Run ----------------------------------------------------------------------
 if __name__ == "__main__":
     root = os.path.join(os.path.dirname(__file__), "..")
+    data_root = os.path.abspath(os.path.join(root, "data"))
     store = mbt.DataStore(
-        data_root=os.path.abspath(os.path.join(root, "data")),
+        data_root=data_root,
         metadata_db=os.path.abspath(os.path.join(root, "metadata", "metadata.sqlite")),
+        arrow_dir=os.path.join(data_root, "mega"),
     )
 
     t0 = time.perf_counter()
