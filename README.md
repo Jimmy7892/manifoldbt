@@ -120,4 +120,6 @@ Full API reference, indicator list, configuration guide, and best practices:
 
 ## License
 
-MIT
+Apache 2.0 with Commons Clause. The source is available, free to use,
+modify and self-host. Reselling the software or offering it as a paid
+hosted service is not permitted. See [LICENSE](LICENSE) for the full text.

@@ -3,7 +3,8 @@ name = "manifoldbt"
 version = "0.4.6"
 description = "Rust-powered backtesting engine for quantitative research"
 requires-python = ">=3.9"
-license = "MIT"
+license = { file = "LICENSE" }
+license-files = ["LICENSE"]
 keywords = ["backtesting", "trading", "quantitative-finance", "rust"]
 classifiers = [
     "Development Status :: 4 - Beta",
