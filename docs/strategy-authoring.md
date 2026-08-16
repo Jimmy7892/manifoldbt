@@ -15,13 +15,14 @@ This guide describes how to define trading strategies using the manifoldbt Pytho
 5. [Backtest Configuration](#backtest-configuration)
 6. [Execution Model](#execution-model)
 7. [Fee & Slippage Models](#fee--slippage-models)
-8. [Orders (SL/TP/Trailing)](#orders-sltp-trailing)
-9. [Cross-Asset References](#cross-asset-references)
-10. [Dataset Auto-Resolution](#dataset-auto-resolution)
-11. [Diagnostics](#diagnostics)
-12. [Profiling](#profiling)
-13. [Complete Examples](#complete-examples)
-14. [Indicator Reference](#indicator-reference)
+8. [Orders (SL/TP/Trailing)](#orders-sltptrailing)
+9. [Entry Orders](#entry-orders)
+10. [Cross-Asset References](#cross-asset-references)
+11. [Dataset Auto-Resolution](#dataset-auto-resolution)
+12. [Diagnostics](#diagnostics)
+13. [Profiling](#profiling)
+14. [Complete Examples](#complete-examples)
+15. [Indicator Reference](#indicator-reference)
 
 ---
 
@@ -195,6 +196,11 @@ best = sweep.best("sharpe")
 batch = mbt.run_sweep_lite(strategy, {"fast": range(5, 100), "slow": range(10, 500)}, config, store)
 ```
 
+Grids this size need Pro. Community is capped at 256 backtests cumulatively per
+Python session across all sweep/batch calls, and each sweep call waits 5 s
+before starting; single `bt.run()` calls are never gated. See
+`docs/sweep-combo-limit-plan.md`.
+
 `run_sweep_lite` is optimized for large parameter grids (100k+ combos):
 - Cartesian product expansion in Rust (no Python loop)
 - Shared indicator cache (EMA(12) computed once, reused across combos)
@@ -309,6 +315,80 @@ strategy = (
     .trailing_stop(pct=2.0)       # 2% trailing stop
 )
 ```
+
+---
+
+## Entry Orders
+
+By default an entry takes a market fill on the execution bar (see
+[Execution Model](#execution-model)). Four order types let the entry rest at a
+price instead:
+
+| Builder method | Fills when | Fill price | Costs |
+|---|---|---|---|
+| `.limit_entry(...)` | price comes **to** the level | the level exactly | maker, no slippage |
+| `.stop_entry(...)` | price breaks **through** the level | the level, or the open if the bar gapped through it | taker + slippage |
+| `.market_if_touched(...)` | price comes **to** the level | the level | taker + slippage |
+| `.stop_limit_entry(...)` | breaks through `stop`, then rests at `limit` | the limit | maker, no slippage |
+
+### Where the level comes from
+
+Every method takes exactly one of three price forms:
+
+```python
+.limit_entry(offset_bps=25)          # 25 bps below the signal close (above, for a sell)
+.limit_entry(price=60_000)           # a fixed level
+.limit_entry(signal="entry_px")      # a level this strategy computes
+```
+
+`signal=` is the general form: name any signal the strategy defines and the
+order rests on that series, read on the signal bar.
+
+```python
+from manifoldbt.indicators import atr, close, ema
+
+trend = ema(close, 50)
+entry_px = close - atr(14)          # rest one ATR below the close
+
+strategy = (
+    mbt.Strategy.create("pullback_entry")
+    .signal("trend", trend)
+    .signal("entry_px", entry_px)   # named so the order can reference it
+    .size(mbt.when(close > trend, 1.0, 0.0))
+    .limit_entry(signal="entry_px", time_in_force={"GTB": 5})
+    .stop_loss(pct=3.0)
+)
+```
+
+### Time in force
+
+`"GTC"` (default, rests until filled or the signal changes), `{"GTB": n}`
+(cancel after n bars), `"IOC"` (fill on the arrival bar or cancel).
+
+### Two things to watch
+
+**A resting entry can simply never fill.** A strategy whose entries never
+trigger produces a flat equity curve with no drawdown, which reads as a clean
+backtest. The engine counts unfilled entries and reports them:
+
+```python
+result = mbt.run_backtest(strategy, config)
+for w in result.warnings:
+    print(w)   # "N entry order(s) expired unfilled and M were still resting ..."
+```
+
+**Sizing uses the close, not the level.** In `FractionOfEquity` mode a target of
+`1.0` is converted to units at the signal-bar close, so an entry resting 2% away
+buys ~2% too much notional. `size_at_fill_price=True` sizes off the order's own
+level instead. It is off by default because turning it on changes the results of
+strategies written against the old behaviour.
+
+### Cost
+
+A conditional entry runs on the general simulation loop rather than the fast
+kernel, so parameter sweeps over one are slower than sweeps over a market entry
+and cannot use the GPU. `run_sweep` reports which setting took you off the fast
+path.
 
 ---
 

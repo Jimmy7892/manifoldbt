@@ -6,19 +6,51 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 
+def entry_price(
+    *,
+    offset_bps: Optional[float] = None,
+    price: Optional[float] = None,
+    signal: Optional[str] = None,
+) -> dict:
+    """Build the price spec for an entry order. Pass exactly one of:
+
+    - ``offset_bps``: distance from the signal-bar close, in bps. Positive is
+      more passive (buy lower / sell higher).
+    - ``price``: a fixed level, the same on every bar.
+    - ``signal``: the name of a strategy signal to read the level from, so the
+      order can rest on ``ema(close, 20)``, ``close - 2 * atr(close, 14)``, a
+      prior swing low, or anything else the DSL can express.
+    """
+    given = [x for x in (offset_bps, price, signal) if x is not None]
+    if len(given) != 1:
+        raise ValueError("entry_price takes exactly one of offset_bps, price, signal")
+    if offset_bps is not None:
+        return {"OffsetBps": offset_bps}
+    if price is not None:
+        return {"Absolute": price}
+    return {"Signal": signal}
+
+
 @dataclass
 class OrderConfig:
-    """Order management configuration for limit entries, stop-loss, take-profit,
-    and trailing stops. All fields are optional — when nothing is set the engine
-    uses the legacy market-order path with zero overhead.
+    """Order management configuration for conditional entries, stop-loss,
+    take-profit, and trailing stops. All fields are optional — when nothing is
+    set the engine uses the legacy market-order path with zero overhead.
 
     Sub-config dicts:
-      limit_entry: {"offset_bps": 10.0, "time_in_force": "GTC"}
-        offset_bps: distance from close in bps (buy: close*(1-offset/10000))
+      limit_entry: where an entry rests instead of taking a market fill.
+        price: {"OffsetBps": 10.0} | {"Absolute": 60000.0} | {"Signal": "entry_px"}
+               (omit and set offset_bps for the legacy shape)
+        trigger: "Limit" (default), "Stop", "StopLimit", "MarketIfTouched"
+        limit_price: same shape as price; required by "StopLimit"
         time_in_force: "GTC" (default), {"GTB": 5}, or "IOC"
+        size_at_fill_price: size off the order's own level instead of the close
       stop_loss:  {"stop_pct": 2.0}   — % from entry price
       take_profit: {"profit_pct": 5.0} — % from entry price
       trailing_stop: {"trail_pct": 3.0, "use_high": true}
+
+    Note that a conditional entry runs on the general simulation loop, not the
+    fast kernel, so sweeps over one are slower than sweeps over a market entry.
     """
 
     limit_entry: Optional[dict] = None
@@ -43,6 +75,52 @@ class OrderConfig:
     def trailing(cls, trail_pct: float, use_high: bool = True) -> "OrderConfig":
         """Convenience: trailing stop only."""
         return cls(trailing_stop={"trail_pct": trail_pct, "use_high": use_high})
+
+    @classmethod
+    def limit_entry_at(
+        cls,
+        *,
+        offset_bps: Optional[float] = None,
+        price: Optional[float] = None,
+        signal: Optional[str] = None,
+        time_in_force: Union[str, dict] = "GTC",
+        size_at_fill_price: bool = False,
+    ) -> "OrderConfig":
+        """Convenience: a passive limit entry resting at the given level."""
+        return cls(
+            limit_entry={
+                "price": entry_price(
+                    offset_bps=offset_bps, price=price, signal=signal
+                ),
+                "trigger": "Limit",
+                "time_in_force": time_in_force,
+                "size_at_fill_price": size_at_fill_price,
+            }
+        )
+
+    @classmethod
+    def stop_entry_at(
+        cls,
+        *,
+        offset_bps: Optional[float] = None,
+        price: Optional[float] = None,
+        signal: Optional[str] = None,
+        time_in_force: Union[str, dict] = "GTC",
+        size_at_fill_price: bool = False,
+    ) -> "OrderConfig":
+        """Convenience: a breakout entry that fills once price trades through
+        the level. Crosses the book, so it pays taker fees and slippage, and a
+        bar that gaps through the level fills at the open."""
+        return cls(
+            limit_entry={
+                "price": entry_price(
+                    offset_bps=offset_bps, price=price, signal=signal
+                ),
+                "trigger": "Stop",
+                "time_in_force": time_in_force,
+                "size_at_fill_price": size_at_fill_price,
+            }
+        )
 
     def to_json_dict(self) -> dict:
         d: dict = {}

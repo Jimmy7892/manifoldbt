@@ -158,6 +158,131 @@ class Strategy:
         self._json_cache = None
         return self
 
+    def _entry(
+        self,
+        trigger: str,
+        offset_bps: Optional[float],
+        price: Optional[float],
+        signal: Optional[str],
+        time_in_force: Any,
+        size_at_fill_price: bool,
+        limit_price: Optional[Dict[str, Any]] = None,
+    ) -> "Strategy":
+        from .config import entry_price
+
+        if self._orders is None:
+            self._orders = {}
+        entry: Dict[str, Any] = {
+            "price": entry_price(offset_bps=offset_bps, price=price, signal=signal),
+            "trigger": trigger,
+            "time_in_force": time_in_force,
+            "size_at_fill_price": size_at_fill_price,
+        }
+        if limit_price is not None:
+            entry["limit_price"] = limit_price
+        self._orders["limit_entry"] = entry
+        self._json_cache = None
+        return self
+
+    def limit_entry(
+        self,
+        *,
+        offset_bps: Optional[float] = None,
+        price: Optional[float] = None,
+        signal: Optional[str] = None,
+        time_in_force: Any = "GTC",
+        size_at_fill_price: bool = False,
+    ) -> "Strategy":
+        """Rest the entry passively at a level instead of taking a market fill.
+
+        Pass exactly one of ``offset_bps`` (distance from the signal-bar close),
+        ``price`` (a fixed level), or ``signal`` (the name of a signal this
+        strategy defines, so the level can be any series the DSL computes).
+
+        A passive fill pays maker fees, takes no slippage, and lands on the
+        level exactly. It can also never fill: check ``result.warnings``.
+
+        Args:
+            offset_bps: Distance from the signal close in bps (positive = more passive).
+            price: A fixed price level.
+            signal: Name of a signal to read the level from.
+            time_in_force: ``"GTC"`` (default), ``{"GTB": 5}``, or ``"IOC"``.
+            size_at_fill_price: Size off the order's level instead of the close.
+        """
+        return self._entry(
+            "Limit", offset_bps, price, signal, time_in_force, size_at_fill_price
+        )
+
+    def stop_entry(
+        self,
+        *,
+        offset_bps: Optional[float] = None,
+        price: Optional[float] = None,
+        signal: Optional[str] = None,
+        time_in_force: Any = "GTC",
+        size_at_fill_price: bool = False,
+    ) -> "Strategy":
+        """Enter on a breakout: fill once price trades **through** the level.
+
+        The mirror of :meth:`limit_entry`. It crosses the book, so it pays taker
+        fees and slippage, and a bar that gaps through the level fills at the
+        open rather than at the level.
+        """
+        return self._entry(
+            "Stop", offset_bps, price, signal, time_in_force, size_at_fill_price
+        )
+
+    def market_if_touched(
+        self,
+        *,
+        offset_bps: Optional[float] = None,
+        price: Optional[float] = None,
+        signal: Optional[str] = None,
+        time_in_force: Any = "GTC",
+        size_at_fill_price: bool = False,
+    ) -> "Strategy":
+        """Wait for price to come to the level, then take a market fill.
+
+        Same trigger as :meth:`limit_entry`, but the fill crosses the book:
+        taker fees and slippage apply.
+        """
+        return self._entry(
+            "MarketIfTouched",
+            offset_bps,
+            price,
+            signal,
+            time_in_force,
+            size_at_fill_price,
+        )
+
+    def stop_limit_entry(
+        self,
+        *,
+        stop: Optional[float] = None,
+        stop_signal: Optional[str] = None,
+        limit: Optional[float] = None,
+        limit_signal: Optional[str] = None,
+        time_in_force: Any = "GTC",
+        size_at_fill_price: bool = False,
+    ) -> "Strategy":
+        """Breakout that arms a resting limit.
+
+        The ``stop`` level arms the order; it then rests at ``limit`` and fills
+        there with maker fees. Pass each level either as a number or as the name
+        of a signal.
+        """
+        from .config import entry_price
+
+        return self._entry(
+            "StopLimit",
+            None,
+            stop,
+            stop_signal,
+            time_in_force,
+            size_at_fill_price,
+            limit_price=entry_price(price=limit, signal=limit_signal),
+        )
+
     def describe(self, text: str) -> "Strategy":
         """Set strategy description (returns self for chaining)."""
         self._description = text
