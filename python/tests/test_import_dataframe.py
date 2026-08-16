@@ -162,3 +162,51 @@ def test_import_dataframe_integer_timestamp_raises(tmp_path):
 def test_import_dataframe_empty_raises(tmp_path):
     with pytest.raises(bt.DataError, match="no data rows"):
         _import_df(_bars_df(0), tmp_path)
+
+
+def test_import_dataframe_daily_interval_runs(tmp_path):
+    """Daily bars import AND backtest.
+
+    Regression: the resolution table listed only 1m/1h, so a daily store
+    resolved to the (empty) 1m directory and the run died with "empty bar
+    dataset for symbol". A ``1d`` entry in the table lets the daily provider
+    layout be found. 1m/1h were unaffected, which is exactly why this slipped.
+    """
+    n = 30
+    ts = pd.date_range("2021-01-01", periods=n, freq="1D", tz="UTC")
+    close = [100.0 + i for i in range(n)]  # strictly rising → buy & hold profits
+    df = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "open": close,
+            "high": [c + 1.0 for c in close],
+            "low": [c - 1.0 for c in close],
+            "close": close,
+            "volume": [10.0] * n,
+        }
+    )
+    store = _import_df(df, tmp_path, name="daily", interval="1d")
+    assert store.resolve_symbol("BTCUSDT") == 1
+
+    strategy = bt.Strategy(
+        name="bh",
+        signals={"signal": bt.lit(1.0)},
+        position_sizing=bt.col("signal"),
+    )
+    config = bt.BacktestConfig(
+        universe=[1],
+        time_range_start=0,
+        time_range_end=int(ts[-1].value) + 5 * 86_400_000_000_000,
+        bar_interval={"Days": 1},
+        initial_capital=1000.0,
+        execution=bt.ExecutionConfig(
+            signal_delay=1, execution_price="AtClose",
+            position_sizing_mode="Units",
+        ),
+        fees=bt.FeeConfig(),
+        slippage={"FixedBps": {"bps": 0.0}},
+    )
+    result = bt.run(strategy, config, store)
+    equity = result.equity_curve.to_pylist()
+    assert len(equity) > 0
+    assert equity[-1] > 1000.0

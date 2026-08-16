@@ -38,6 +38,7 @@ from manifoldbt.config import (
     FeeConfig,
     OrderConfig,
     VenueFees,
+    entry_price,
     resolve_universe,
 )
 from manifoldbt.exceptions import (
@@ -157,9 +158,10 @@ def _require_pro_for_gpu(device, feature: str) -> None:
 
 
 # Community fan-out budget: sweeps and batches may run up to this many backtests
-# per call for free; beyond it requires Pro. Single run() is never affected.
-# Keep in sync with the native bt_license::COMMUNITY_MAX_SWEEP_COMBOS.
-_COMMUNITY_MAX_COMBOS = 500
+# cumulatively per process for free; beyond it requires Pro. Single run() is
+# never affected. Keep in sync with the native
+# bt_license::COMMUNITY_MAX_SWEEP_COMBOS.
+_COMMUNITY_MAX_COMBOS = 256
 
 
 def _grid_combos(param_grid) -> int:
@@ -173,14 +175,17 @@ def _grid_combos(param_grid) -> int:
 def _require_pro_over_combos(n_combos: int, what: str) -> None:
     """Raise LicenseError if a fan-out exceeds the Community combination limit.
 
-    No-op at or below the limit, or for Pro users. Mirrors the native
-    ``require_combo_limit`` so Community and Pro see identical behaviour.
+    Fast-fail UX layer only: catches a single call that could never fit the
+    budget. The authoritative gate is the native ``require_combo_limit``,
+    which enforces the limit **cumulatively per session** — small calls also
+    consume budget there, and this mirror cannot (and must not) track that.
     """
     if n_combos <= _COMMUNITY_MAX_COMBOS or _is_pro():
         return
     raise LicenseError(
         f"{what} with {n_combos} runs exceeds the Community limit of "
-        f"{_COMMUNITY_MAX_COMBOS}. Upgrade to Pro at www.manifoldbt.com"
+        f"{_COMMUNITY_MAX_COMBOS} combinations per session. "
+        f"Upgrade to Pro at www.manifoldbt.com"
     )
 
 
@@ -1603,6 +1608,7 @@ __all__ = [
     "FeeConfig",
     "VenueFees",
     "OrderConfig",
+    "entry_price",
     # Helpers
     "date_to_ns",
     "time_range",
