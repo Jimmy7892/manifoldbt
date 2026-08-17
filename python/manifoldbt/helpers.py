@@ -122,9 +122,24 @@ class ExecutionPrice:
     MID_PRICE = "MidPrice"
 
     @staticmethod
-    def custom(column: str) -> Dict[str, str]:
-        """Fill at a named column from bar data."""
-        return {"Custom": column}
+    def custom(name: str) -> Dict[str, str]:
+        """Fill at a named bar column, or at a signal the strategy defines.
+
+        The name resolves against the bar schema first (``vwap``, ``bid``, ...),
+        then against the strategy's signals -- so a fill can land on any level
+        the DSL computes (a band around an SMA, a prior swing, ...)::
+
+            strat = strat.signal("exec_level", sma * 1.012)
+            config.execution.execution_price = ExecutionPrice.custom("exec_level")
+
+        The series is read at the order's SIGNAL row (no look-ahead beyond what
+        the sizing already has; with the default ``signal_delay=0`` that is the
+        execution bar). A row where the signal has no value falls back to the
+        close with a warning, and a fill outside the bar's [low, high] range is
+        warned about. A name that is neither a column nor a signal is rejected
+        before the simulation starts.
+        """
+        return {"Custom": name}
 
 
 # ---------------------------------------------------------------------------

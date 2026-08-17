@@ -255,8 +255,9 @@ When `accuracy=True`, the engine loads `bars_1m` and runs in hybrid mode: signal
 
 ```python
 mbt.ExecutionConfig(
-    signal_delay=1,                    # bars between signal and execution
-    execution_price="AtClose",         # fill price: AtClose, AtOpen, AtVwap, MidPrice
+    signal_delay=0,                    # bars between signal and execution
+    execution_price="AtClose",         # AtClose, AtOpen, AtVwap, MidPrice,
+                                       # or ExecutionPrice.custom(name)
     max_position_pct=0.5,              # max position as fraction of equity
     allow_short=True,                  # allow short positions
     allow_fractional=True,             # allow fractional units
@@ -265,13 +266,57 @@ mbt.ExecutionConfig(
 )
 ```
 
+### Filling at a computed level
+
+`ExecutionPrice.custom(name)` accepts a bar column (`"vwap"`, ...) **or the
+name of any signal the strategy defines**, so a market fill can land on a level
+the DSL computes instead of the bar's close. The canonical use is a band
+strategy on native fine bars: the entry level is known before the bar starts,
+and the touch bar itself proves the level traded (it sits between open and
+high), yet a close fill would be systematically on the wrong side of it.
+
+```python
+from manifoldbt.indicators import close, high, low, open
+band_up, band_dn = sma * 1.012, sma * 0.992
+exec_level = mbt.when(high >= band_up,
+                      mbt.when(open >= band_up, open, band_up),   # gapped through
+             mbt.when(low <= band_dn,
+                      mbt.when(open <= band_dn, open, band_dn),
+             close))
+strat = strat.signal("exec_level", exec_level)
+config.execution.execution_price = mbt.ExecutionPrice.custom("exec_level")
+```
+
+One series covers entry AND exit fills. The rules that keep it honest:
+
+- the series is read at the order's **signal row**, never ahead of it;
+- a fill outside the execution bar's `[low, high]` range draws a warning;
+- a row with no value (warm-up) falls back to the close, with a warning;
+- a name that is neither a column nor a signal is rejected before the run;
+- a bar column always wins over a same-named signal (warned about).
+
+A custom execution price leaves the fast kernel, like every non-`AtClose`
+price: `run()` is unaffected, large sweeps fall back to the general loop and
+`fast_path_blocker` says so.
+
 ### Signal delay
 
-| Value | Behavior                                          |
-|-------|---------------------------------------------------|
-| `0`   | Execute same bar (look-ahead bias risk)           |
-| `1`   | **Default.** Execute next bar (t+1)               |
-| `2+`  | Execute N bars after signal                       |
+| Value | Behavior                                                        |
+|-------|-----------------------------------------------------------------|
+| `0`   | **Default.** Fill at the close of the signal bar                |
+| `1`   | Fill on the next bar (t+1)                                      |
+| `2+`  | Fill N bars after the signal                                    |
+
+`0` models a decision taken on the bar's own close and filled at that close, the
+market-on-close convention, and it is what vectorbt's `from_signals` does. It is
+the right default for coarse bars, where one bar of delay would mean pricing a
+full day of latency into a decision that in reality reaches the market in
+seconds.
+
+Raise it when a bar is short enough that one bar is a plausible
+decision-to-fill latency: on 1s or sub-second bars, `signal_delay=1` *is* the
+realistic setting, and `0` assumes an infinitely fast round trip. The engine
+does not infer this from `bar_interval`, so it is on you to set it.
 
 ---
 
@@ -655,7 +700,7 @@ Every result includes these performance metrics:
 
 ## Best Practices
 
-1. **Use `signal_delay=1`** (default). `signal_delay=0` introduces look-ahead bias.
+1. **Set `signal_delay` deliberately.** It defaults to `0` (fill at the signal bar's close). Raise it to `1` when one bar is a realistic decision-to-fill latency, i.e. on fine-grained bars.
 2. **Set `warmup_bars`** to at least the longest indicator period.
 3. **Use `mbt.when()` for sizing.** Keep signal logic readable and composable.
 4. **Run diagnostics** (`detect_lookahead`, `check_exposure_stability`) on new strategies.
