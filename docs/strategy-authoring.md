@@ -196,16 +196,23 @@ best = sweep.best("sharpe")
 batch = mbt.run_sweep_lite(strategy, {"fast": range(5, 100), "slow": range(10, 500)}, config, store)
 ```
 
-Grids this size need Pro. Community is capped at 256 backtests cumulatively per
-Python session across all sweep/batch calls, and each sweep call waits 5 s
-before starting; single `bt.run()` calls are never gated. See
-`docs/sweep-combo-limit-plan.md`.
+Grids this size need Pro; Community is capped, and the engine tells you where
+you stand when you hit it. Single `bt.run()` calls are never gated.
 
 `run_sweep_lite` is optimized for large parameter grids (100k+ combos):
 - Cartesian product expansion in Rust (no Python loop)
+- Signals and position sizing compiled as one graph, so what they share is
+  computed once
 - Shared indicator cache (EMA(12) computed once, reused across combos)
-- Pre-resampled bars (no per-combo resample overhead)
-- Metrics only — no Arrow output
+- Bars and higher-timeframe columns resampled once per sweep, not per combo
+- Metrics only — no Arrow output, and signals nothing reads are never
+  materialised
+
+Add `device="cuda"` on a machine with an NVIDIA GPU and a CUDA build. It pays
+off on large grids, where it is typically an order of magnitude faster;
+`device="auto"` (the default) picks between CPU and GPU for you, since the GPU
+loses on small ones. Results are identical either way. A strategy the GPU
+cannot take falls back to the CPU and says which setting caused it.
 
 ---
 
@@ -295,9 +302,15 @@ One series covers entry AND exit fills. The rules that keep it honest:
 - a name that is neither a column nor a signal is rejected before the run;
 - a bar column always wins over a same-named signal (warned about).
 
-A custom execution price leaves the fast kernel, like every non-`AtClose`
-price: `run()` is unaffected, large sweeps fall back to the general loop and
-`fast_path_blocker` says so.
+**A custom execution price keeps the fast kernel, and the GPU.** Sweeping one is
+as fast as sweeping a plain `AtClose` strategy, and `device="cuda"` accepts it:
+the level is evaluated in the kernel beside the position sizing, so correct
+fills no longer cost throughput. Results are identical on both devices.
+
+Two conditions, and the sweep says so when either fails: the name must resolve
+to a **signal** rather than a bar column (a column is read per execution row, a
+different rule), and the strategy must have no exit orders, whose entry-bar
+re-check needs the general loop. `run()` is unaffected either way.
 
 ### Signal delay
 
@@ -410,7 +423,21 @@ strategy = (
 `"GTC"` (default, rests until filled or the signal changes), `{"GTB": n}`
 (cancel after n bars), `"IOC"` (fill on the arrival bar or cancel).
 
-### Two things to watch
+### Three things to watch
+
+**A resting order keeps the level it was created with.** `signal=` is read once,
+on the bar the order is placed, and held until the order fills, expires or is
+cancelled. It does **not** follow the series afterwards. That is the intended
+behaviour of a resting order, and it is the trap for a band strategy: if the
+band moves every bar, the order waits at a price the band has left, and a bar
+that gaps past the stale level still fills there. Watch the out-of-range fill
+warnings, which count exactly this.
+
+If what you want is "fill wherever my level is on the bar that trades", that is
+not a resting order at all: use
+[`ExecutionPrice.custom`](#filling-at-a-computed-level), which re-reads the
+level every bar. Keep a resting entry for what it models, a real order sitting
+in the book at a price you chose.
 
 **A resting entry can simply never fill.** A strategy whose entries never
 trigger produces a flat equity curve with no drawdown, which reads as a clean
@@ -434,6 +461,11 @@ A conditional entry runs on the general simulation loop rather than the fast
 kernel, so parameter sweeps over one are slower than sweeps over a market entry
 and cannot use the GPU. `run_sweep` reports which setting took you off the fast
 path.
+
+This is specific to a **resting order**, which can stay unfilled across bars.
+Filling at a computed level does not carry that cost: see
+[Filling at a computed level](#filling-at-a-computed-level), which stays on the
+fast kernel and on the GPU.
 
 ---
 
