@@ -176,6 +176,24 @@ Full API reference, indicator list, configuration guide, and best practices:
 | Safety checks (lookahead, exposure) | - | Yes |
 | Tearsheets & export | - | Yes |
 
+## Telemetry
+
+Every install sends one anonymous ping a day: an anonymous install id, the
+ManifoldBT version, your OS, CPU architecture, whether it is a CUDA build, your
+Python major version, and Community or Pro. No email, no license key, no
+strategy, no data, no results. It tells us which versions and platforms are
+still in use, so we know what we can stop supporting.
+
+Turn it off with either of:
+
+```bash
+export MANIFOLDBT_NO_TELEMETRY=1
+export DO_NOT_TRACK=1
+```
+
+CI runners are skipped automatically. Pro license validation is a separate
+mechanism and is not affected by these variables.
+
 ## License
 
 Apache 2.0 with Commons Clause. The source is available, free to use,
