@@ -1,0 +1,12 @@
+# Pinned on purpose: a benchmark whose dependency set moves under it is not a
+# benchmark. These are the exact versions the harness was validated against, and
+# they are recorded again inside every results JSON so a reader can tell whether
+# two runs are comparable.
+#
+# manifoldbt itself is NOT pinned here: the workflow installs the version under
+# test (`pip install manifoldbt==X`), so the same lock file serves every release.
+vectorbt==0.28.4
+numpy==2.4.3
+numba==0.64.0
+pandas==2.3.3
+psutil==7.2.2

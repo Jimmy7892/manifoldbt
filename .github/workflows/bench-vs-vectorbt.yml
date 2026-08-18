@@ -1,0 +1,112 @@
+# The benchmark runs here, in the open, on standard GitHub-hosted runners.
+#
+# Nothing in this workflow has access to the engine source: it installs the
+# published wheel from PyPI, exactly like any user would. That is what makes the
+# result independent rather than self-reported, and it is why anyone can fork
+# this repository and press "Run workflow" to reproduce the numbers on their own
+# runner.
+
+name: Benchmark vs vectorbt
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifoldbt_version:
+        description: "manifoldbt version to install from PyPI (blank = latest)"
+        required: false
+        default: ""
+      reps:
+        description: "Interleaved repetitions per point"
+        required: false
+        default: "7"
+  release:
+    types: [published]
+  schedule:
+    # Weekly, to catch a slowdown introduced by a dependency rather than by us.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-vs-vectorbt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bars: "10000 100000 1000000 5000000"
+          - os: windows-latest
+            bars: "10000 100000 1000000 5000000"
+          # macOS runners ship 7 GB of RAM against 16 GB elsewhere, and vectorbt
+          # materialises the simulation in memory (roughly 150 MB per million
+          # bars, measured). The top size is trimmed so a point is never lost to
+          # swapping, which would time the disk instead of the engine.
+          - os: macos-latest
+            bars: "10000 100000 1000000"
+
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install engines from PyPI
+        shell: bash
+        run: |
+          set -e
+          VERSION="${{ inputs.manifoldbt_version }}"
+          # A release run benchmarks the version that was just published.
+          if [ -z "$VERSION" ] && [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="$(echo '${{ github.event.release.tag_name }}' | sed 's/^v//')"
+          fi
+          python -m pip install --upgrade pip
+          if [ -n "$VERSION" ]; then
+            pip install "manifoldbt==${VERSION}"
+          else
+            pip install manifoldbt
+          fi
+          pip install -r benchmarks/vs_vectorbt/requirements-lock.txt
+
+      - name: Record the resolved environment
+        shell: bash
+        run: pip freeze | grep -iE '^(manifoldbt|vectorbt|numpy|numba|pandas|psutil)=' || true
+
+      - name: Run the benchmark
+        shell: bash
+        working-directory: benchmarks/vs_vectorbt
+        run: |
+          python bench.py \
+            --bars ${{ matrix.bars }} \
+            --reps "${{ inputs.reps || '7' }}" \
+            --cold-start-reps 3 \
+            --memory-bars 2000000 \
+            --out "results-${{ matrix.os }}.json"
+
+      - name: Render the report
+        # Runs even when the benchmark exits non-zero: a parity failure is the
+        # most interesting thing that can happen here, and it must be readable
+        # in the job summary rather than buried in a red step.
+        if: always()
+        shell: bash
+        working-directory: benchmarks/vs_vectorbt
+        run: python report.py "results-${{ matrix.os }}.json"
+
+      - name: Upload the raw result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: benchmarks/vs_vectorbt/results-*.json
+          if-no-files-found: warn

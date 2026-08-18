@@ -1,0 +1,177 @@
+# manifoldbt vs vectorbt
+
+An engine-to-engine benchmark you can re-run yourself. It installs both engines
+from PyPI, generates its own data, checks that the two engines produced the
+**same result**, and only then reports how long each took.
+
+```bash
+pip install manifoldbt vectorbt
+pip install -r requirements-lock.txt
+python bench.py --bars 10000 100000 1000000 --reps 7 --cold-start-reps 3 --memory-bars 2000000 --out results.json
+python report.py results.json
+```
+
+No dataset to download, no API key, no configuration. The same command runs in
+GitHub Actions on a public runner, so every published number has a run URL
+behind it.
+
+## The rule this harness is built around
+
+A speed comparison between two backtesters is worthless unless both engines did
+the same work. So parity comes first:
+
+1. each workload runs once per engine;
+2. total return, round-trip count and fees are compared;
+3. **a workload the engines disagree on gets no published timing.**
+
+Three verdicts come out of that gate:
+
+| Verdict | Meaning | What gets published |
+|---|---|---|
+| `exact` | agreement down to float-reordering noise (relative tolerance 1e-9) | the timing, in the headline table |
+| `documented` | the engines disagree, the workload declared it in advance, and the cause is written down | the timing, in an annex, with the cause and its measured size |
+| `failed` | the engines disagree and nobody predicted it | nothing. The run exits non-zero |
+
+The `failed` path is not decoration. It is the reason the other numbers can be
+trusted, and it makes the benchmark fail loudly if a future release of either
+engine changes a fill rule.
+
+## Method
+
+**Interleaved repetitions.** The engines alternate inside each repetition
+(A, B, A, B, ...) rather than running in two blocks. On a shared cloud runner
+that slows down halfway through, two blocks would hand the penalty to whichever
+engine ran second; alternating splits it evenly.
+
+**The ratio is the headline, milliseconds are context.** Each ratio comes from
+two measurements taken seconds apart on the same machine. Absolute timings from
+a shared runner are worth much less than the ratio between them.
+
+**Dispersion is published, and noise is flagged.** Every point carries min,
+median, max and interquartile range. If the IQR exceeds 15% of the median the
+point is marked `noisy` and is not headline material, however good it looks.
+
+**Warmup is discarded, and that favours vectorbt on purpose.** The first call of
+each engine is thrown away, which is where vectorbt pays its numba compilation.
+Charging a one-off JIT cost to every repetition would inflate the result.
+
+**Data loading is excluded on both sides.** manifoldbt is handed a prepared
+store, vectorbt is handed prepared Series. What is timed is indicators plus
+simulation plus reading the headline metrics, nothing else.
+
+**Only public APIs.** manifoldbt is driven through `bt.run(strategy, config,
+store)`, the documented entry point, not through an internal fast path.
+
+## What is compared
+
+| Workload | What it exercises | Parity |
+|---|---|---|
+| `sma_cross` | SMA 10/50 crossover, long-only, no cost | exact |
+| `ema_rsi_fees` | EMA 12/26 crossover with an RSI(14) filter and a 5 bps taker fee | exact |
+| `sma_cross_metrics` | the same simulation, plus max drawdown, Sharpe, Sortino and volatility | exact |
+| `bracket_sl_tp` | the same entry with a 15 bps stop and a 30 bps target | documented divergence |
+
+Each of those runs across a range of series lengths. Two further axes, cold
+start and memory, are measured in their own processes because they cannot be
+measured honestly inside the main one.
+
+**Scope, stated twice on purpose.** `sma_cross` and `sma_cross_metrics` run the
+identical simulation; only the second one also produces a performance summary.
+manifoldbt computes that summary inside `run()` whether or not you read it,
+while vectorbt defers the equity curve until a risk metric asks for it and then
+pays to materialise it. Reporting both scopes is the only honest way to present
+the result: a reader who only wants a total return should look at the first
+number, and a reader who wants a Sharpe should look at the second. Parity on the
+summary workload is gated on total return, round-trip count and max drawdown,
+which match exactly; the ratios agree to about 3e-4, because manifoldbt buckets
+its daily returns slightly differently, and that residual is reported rather
+than smoothed over.
+
+The vectorbt side of the summary is written out in pandas rather than through
+`pf.sharpe_ratio()` for two reasons, both in vectorbt's favour or neutral.
+manifoldbt computes its ratios on daily returns annualised by sqrt(365) and its
+drawdown at full bar resolution, so the native accessors would return different
+numbers and the comparison would be timing two different computations; and the
+hand-written version is measurably faster than a single native accessor on the
+same data, so vectorbt is credited with the quicker of its two paths.
+
+**Cold start.** The steady-state table discards a warmup call, which is where
+vectorbt compiles its numba kernels. A user pays that cost in every new
+notebook, script or CI job, so it is measured rather than waved away: a fresh
+process, an engine it has never imported, one backtest. The Python, numpy and
+pandas baseline is measured the same way and reported alongside, so the engine's
+own share can be read off instead of argued about.
+
+**Memory added by the run.** Resident memory sampled while the backtest
+executes, after a warmup. vectorbt materialises the simulation as arrays and its
+footprint grows with the series; manifoldbt streams bars out of its store. What
+is compared is what running a backtest costs *on top of* already holding the
+data: building each engine's data representation is a different question and is
+excluded on both sides, in manifoldbt's case a deliberately unflattering choice
+since its one-off ingest is the memory-hungry part.
+
+### Why the fee workload sizes in units
+
+With `FractionOfEquity` sizing and a non-zero fee the engines size differently:
+manifoldbt charges the fee on top of a full-equity notional, vectorbt reserves
+it out of cash first. Both are legitimate product decisions, and comparing them
+would compare policy rather than speed or correctness. Sizing in fixed units
+isolates the fee arithmetic, which is the thing both engines must agree on.
+
+### The documented divergence, in full
+
+When a bracket fires intrabar and the entry condition still holds at that bar's
+close, manifoldbt books two orders on that bar: the stop or target exit, then a
+fresh entry at the close. vectorbt processes one order per bar and re-enters on
+the next bar instead. Neither is wrong. On controlled bars the bracket fills
+themselves match exactly, which the cross-engine parity suite shipped with the
+library pins test by test; the divergence is purely about *when* a re-entry is
+allowed.
+
+The harness counts the affected round-trips rather than hand-waving at them, so
+the report states what share of the trades the difference touches.
+
+## Alignment choices, and why each one exists
+
+Two engines only produce identical numbers if they are told to do the same
+thing. These are the conventions the harness sets, all of them visible in
+[engine_mbt.py](engine_mbt.py) and [engine_vbt.py](engine_vbt.py):
+
+- `signal_delay=0` with `execution_price="AtClose"`, matching what
+  `Portfolio.from_signals` does by default: a signal fills at the close of the
+  bar that produced it.
+- `warmup_bars=0`, so the indicator's own NaN warmup is what suppresses early
+  signals, identically on both sides.
+- Signals are fed to vectorbt as a *level* (`entries` = the condition holds,
+  `exits` = it no longer holds) rather than as transitions, which reproduces
+  manifoldbt's target-position semantics.
+- Indicators are mirrored on manifoldbt's exact definitions. The EMA seeds on
+  the first observation with `alpha = 2/(span+1)`, which `ewm(span=n,
+  adjust=False)` reproduces exactly. The RSI is Wilder's, seeded with the
+  *simple* average of the first `period` deltas and emitted from bar `period`:
+  a plain `ewm(alpha=1/period)` over the whole delta series is a different
+  indicator, and using it would have made the engines disagree for a reason that
+  has nothing to do with either engine.
+- The generated bars have no opening gap (`open == previous close`). A bar that
+  gaps through a stop is the one case where two engines can legitimately book
+  different fill prices while both being correct, so that class of false
+  failures is removed from the data rather than argued about in the report.
+
+## Reading the numbers honestly
+
+- On a shared runner with 4 vCPUs, an engine that parallelises is understated.
+  These are floors, not peaks.
+- The published wheels are CPU-only, and GitHub-hosted runners have no GPU, so
+  nothing here says anything about GPU performance.
+- vectorbt is the open-source package (`pip install vectorbt`), not vectorbtpro.
+
+## Files
+
+- `data.py` - deterministic OHLCV generator and its content digest
+- `probe_child.py` - the cold-start and memory probes, each in a fresh process
+- `workloads.py` - the parameters both engines read, and the declared parity status
+- `engine_mbt.py` / `engine_vbt.py` - one adapter per engine
+- `parity.py` - the gate
+- `bench.py` - the runner
+- `report.py` - JSON to Markdown, and to the GitHub job summary
+- [`.github/workflows/bench-vs-vectorbt.yml`](../../.github/workflows/bench-vs-vectorbt.yml) - the workflow that runs all of the above on a GitHub-hosted runner
