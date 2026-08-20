@@ -6,11 +6,11 @@ Two things cannot be measured honestly inside the main harness process:
 compiles its numba kernels on the first call, which is a real cost a user pays
 in every new notebook or script, and which the steady-state benchmark
 deliberately discards. Measuring it requires a process that has never imported
-either engine.
+any of the engines.
 
 *Memory* - peak resident memory attributable to the run. Once one engine has
-run in a process, the allocator has already grown and the other engine's
-measurement is meaningless.
+run in a process, the allocator has already grown and any other engine's
+measurement in it is meaningless.
 
 The ``baseline`` mode measures the same process doing everything except calling
 an engine (interpreter start, numpy and pandas import, data generation) so the
@@ -18,6 +18,7 @@ engine's own share can be read off rather than argued about.
 
     python probe_child.py coldstart mbt sma_cross 20000
     python probe_child.py memory    vbt sma_cross 5000000
+    python probe_child.py coldstart rbt sma_cross 20000
     python probe_child.py baseline  none sma_cross 20000
 """
 from __future__ import annotations
@@ -42,18 +43,24 @@ def _rss_mb() -> float:
 
 
 def _build(engine: str, workload: str, bars: int):
+    """Import exactly one adapter and hand back its timed closure.
+
+    The import happens here, inside the measurement, because on the cold-start
+    path it *is* part of what is being measured. Which is also why the engine is
+    named by its short code rather than passed as a module: this process must
+    have imported one engine and no others by the time it runs.
+    """
     import data as data_mod
 
     frame = data_mod.make_ohlcv(bars)
-    if engine == "mbt":
-        import engine_mbt
+    if engine == "none":
+        return lambda: {}
 
-        return engine_mbt.prepare(workload, frame, tempfile.mkdtemp(prefix="mbt_probe_"))
-    if engine == "vbt":
-        import engine_vbt
+    import engines as engines_mod
 
-        return engine_vbt.prepare(workload, frame, None)
-    return lambda: {}
+    name = engines_mod.BY_CODE[engine].name
+    workdir = tempfile.mkdtemp(prefix=engine + "_probe_")
+    return engines_mod.adapter(name).prepare(workload, frame, workdir)
 
 
 def cold_start(engine: str, workload: str, bars: int) -> dict:

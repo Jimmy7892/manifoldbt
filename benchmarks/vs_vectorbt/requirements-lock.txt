@@ -5,7 +5,17 @@
 #
 # manifoldbt itself is NOT pinned here: the workflow installs the version under
 # test (`pip install manifoldbt==X`), so the same lock file serves every release.
+#
+# raptorbt has no dependency of its own, so pinning it moves nothing else in the
+# set. It does pin the *interpreter*, though: it is built against pyo3 0.20.3,
+# whose maximum supported CPython is 3.12, so there is no cp313 wheel in any
+# release up to 0.9.0 and a source build refuses outright ("the configured
+# Python interpreter version (3.13) is newer than PyO3's maximum supported
+# version (3.12)"). That is why the workflow runs 3.12: comparing engines means
+# running them in one environment, and the environment has to be one they all
+# support.
 vectorbt==0.28.4
+raptorbt==0.9.0
 numpy==2.4.3
 numba==0.64.0
 pandas==2.3.3

@@ -3,20 +3,25 @@
 Design decisions that are the whole point of this harness
 ---------------------------------------------------------
 *Parity first.* Every workload runs once per engine before any measurement, and
-the results are compared. A workload the engines disagree on gets no published
-timing (see ``parity.py``).
+each challenger's result is compared against the reference. A workload an engine
+disagrees on gets no published timing for that engine (see ``parity.py``).
 
 *Interleaved repetitions.* The engines alternate within each repetition rather
-than running in two blocks. A cloud runner that slows down halfway through
-penalises both engines equally instead of whichever one happened to be second.
+than running in blocks. A cloud runner that slows down halfway through penalises
+all of them equally instead of whichever one happened to be last.
 
 *Ratios are the headline, milliseconds are context.* The per-repetition ratio is
-computed from two measurements taken seconds apart on the same machine, so it
+computed from measurements taken seconds apart on the same machine, so it
 survives the noise that absolute timings on shared hardware do not.
 
 *Dispersion is published.* Every point carries min, median, max and IQR. A point
 whose IQR exceeds 15% of its median is flagged noisy, and a flagged point is not
 headline material no matter how good it looks.
+
+*An engine that cannot run a workload says so.* It is dropped from that workload
+with its reason recorded, never left as a blank cell: a missing number in a
+speed table reads as a loss, and "this engine has no fixed-quantity sizing" is
+not a loss, it is a different fact that deserves its own sentence.
 
 Usage
 -----
@@ -39,12 +44,21 @@ from typing import Any, Callable, Dict, List
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import data as data_mod  # noqa: E402
-import engine_mbt  # noqa: E402
-import engine_vbt  # noqa: E402
+import engines as engines_mod  # noqa: E402
 import parity as parity_mod  # noqa: E402
-from workloads import DEFAULT_KEYS, SCOPE_PAIR, WORKLOADS  # noqa: E402
+from engines import CHALLENGERS, ENGINES, REFERENCE  # noqa: E402
+from workloads import (  # noqa: E402
+    DEFAULT_KEYS,
+    SCOPE_PAIR,
+    WORKLOADS,
+    supported,
+    unsupported_by,
+)
 
-SCHEMA_VERSION = 1
+# 2: timings, parity and speedups became per-engine maps when the harness grew
+# past two engines. `report.py` reads version 1 files as well, so the results
+# archived under results/ stay readable.
+SCHEMA_VERSION = 2
 NOISE_THRESHOLD = 0.15
 
 
@@ -88,10 +102,18 @@ def _ram_gb():
 
 
 def _versions() -> Dict[str, str]:
+    """Distribution versions, engines first then the stack underneath them.
+
+    Read from the installed metadata rather than from each package's own
+    ``__version__``, which is a hand-maintained constant and can lag: raptorbt
+    0.4.1 still declares 0.4.0 in its ``__init__``.
+    """
     import importlib.metadata as md
 
+    names = [ENGINES[n].distribution for n in ENGINES]
+    names += ["numpy", "numba", "pandas"]
     out = {}
-    for name in ("manifoldbt", "vectorbt", "numpy", "numba", "pandas"):
+    for name in names:
         try:
             out[name] = md.version(name)
         except Exception:
@@ -201,129 +223,161 @@ def _summarise(samples: List[float]) -> Dict[str, Any]:
     }
 
 
-def measure_pair(keys: List[str], bars: int, reps: int, workdir: str) -> List[Dict[str, Any]]:
-    """Measure two workloads inside ONE interleaved loop.
+def _roll_up(verdicts: Dict[str, Dict[str, Any]]) -> str:
+    """One status for the whole entry: the worst any engine came back with."""
+    statuses = {v["status"] for v in verdicts.values()}
+    for worst in ("failed", "documented"):
+        if worst in statuses:
+            return worst
+    return "exact"
 
-    The report puts these two side by side to show what a performance summary
-    costs each engine. That subtraction is only legitimate if all four timings
-    come from the same stretch of machine time: measured in separate blocks, the
-    drift in absolute timings is larger than the difference being reported, and
-    the table ends up claiming the version doing more work is the faster one.
-    """
-    frame = data_mod.make_ohlcv(bars)
-    runners = {}
-    entries = {}
-    for key in keys:
-        run_mbt = engine_mbt.prepare(key, frame, workdir)
-        run_vbt = engine_vbt.prepare(key, frame, workdir)
-        _, warm_mbt = _time_once(run_mbt)
-        _, warm_vbt = _time_once(run_vbt)
-        verdict = parity_mod.compare(warm_mbt, warm_vbt, key)
-        runners[key] = (run_mbt, run_vbt)
-        entries[key] = {
-            "workload": key,
-            "title": WORKLOADS[key].title,
-            "bars": bars,
-            "data_digest": data_mod.digest(frame),
-            "parity": verdict,
-            "paired_with": [k for k in keys if k != key],
-        }
 
-    samples: Dict[str, Dict[str, List[float]]] = {
-        key: {"manifoldbt": [], "vectorbt": [], "ratio": []} for key in keys
+def _prepare_all(key: str, frame, workdir: str, active: List[str]):
+    """Build one timed closure per engine that can run this workload."""
+    return {
+        name: engines_mod.adapter(name).prepare(key, frame, workdir)
+        for name in active
+        if supported(key, name)
     }
-    threading_use = {key: {"manifoldbt": _Parallelism(), "vectorbt": _Parallelism()}
-                     for key in keys}
-    for _ in range(reps):
-        for key in keys:
-            run_mbt, run_vbt = runners[key]
-            t_mbt, _ = threading_use[key]["manifoldbt"].record(run_mbt)
-            t_vbt, _ = threading_use[key]["vectorbt"].record(run_vbt)
-            samples[key]["manifoldbt"].append(t_mbt)
-            samples[key]["vectorbt"].append(t_vbt)
-            samples[key]["ratio"].append(t_vbt / t_mbt if t_mbt > 0 else float("nan"))
-
-    out = []
-    for key in keys:
-        entry = entries[key]
-        if entry["parity"]["status"] == "failed":
-            entry["timings"] = None
-            entry["note"] = "timing withheld: unexplained disagreement between engines"
-            out.append(entry)
-            continue
-        mbt_stats = _summarise(samples[key]["manifoldbt"])
-        vbt_stats = _summarise(samples[key]["vectorbt"])
-        ratios = samples[key]["ratio"]
-        entry["timings"] = {"manifoldbt": mbt_stats, "vectorbt": vbt_stats}
-        entry["speedup"] = {
-            "median_of_ratios": statistics.median(ratios),
-            "min": min(ratios),
-            "max": max(ratios),
-        }
-        entry["noisy"] = (
-            mbt_stats["iqr_over_median"] > NOISE_THRESHOLD
-            or vbt_stats["iqr_over_median"] > NOISE_THRESHOLD
-        )
-        entry["cpu_over_wall"] = {
-            engine: threading_use[key][engine].ratio for engine in ("manifoldbt", "vectorbt")
-        }
-        out.append(entry)
-    return out
 
 
-def measure(key: str, bars: int, reps: int, workdir: str) -> Dict[str, Any]:
-    frame = data_mod.make_ohlcv(bars)
-    run_mbt = engine_mbt.prepare(key, frame, workdir)
-    run_vbt = engine_vbt.prepare(key, frame, workdir)
+def _warm_and_gate(key: str, runners: Dict[str, Callable]) -> Dict[str, Any]:
+    """One discarded call per engine, then the parity verdicts it feeds.
 
-    # Warmup, discarded: numba compiles on vectorbt's first call, and the engine
-    # warms its own caches. Both are one-off costs, reported separately rather
-    # than smeared across every repetition.
-    _, warm_mbt = _time_once(run_mbt)
-    _, warm_vbt = _time_once(run_vbt)
+    The warmup is not only there to be thrown away: it is the run the gate
+    reads. numba compiles on vectorbt's first call and the engines warm their
+    own caches, so the same call cannot be both the first measurement and a fair
+    one, but it is a perfectly good sample of what each engine *computed*.
+    """
+    warm = {name: _time_once(run)[1] for name, run in runners.items()}
+    reference = warm[REFERENCE]
+    return {
+        name: parity_mod.compare(reference, metrics, key, name)
+        for name, metrics in warm.items()
+        if name != REFERENCE
+    }
 
-    verdict = parity_mod.compare(warm_mbt, warm_vbt, key)
+
+def _entry(key: str, bars: int, frame, verdicts: Dict[str, Any], engines_run: List[str]):
     entry: Dict[str, Any] = {
         "workload": key,
         "title": WORKLOADS[key].title,
         "bars": bars,
         "data_digest": data_mod.digest(frame),
-        "parity": verdict,
+        "engines": engines_run,
+        "parity": verdicts,
+        "status": _roll_up(verdicts),
     }
-    if verdict["status"] == "documented":
-        entry["divergence_scale"] = engine_mbt.diagnose(key, frame, workdir)
+    skipped = unsupported_by(key)
+    if skipped:
+        entry["unsupported"] = skipped
+    return entry
 
-    if verdict["status"] == "failed":
+
+def _collect(entry: Dict[str, Any], runners: Dict[str, Callable],
+             samples: Dict[str, List[float]], threading_use: Dict[str, _Parallelism]) -> None:
+    """Turn raw per-engine samples into the published shape, in place."""
+    published = [
+        name for name in runners
+        if name == REFERENCE or entry["parity"][name]["status"] != "failed"
+    ]
+    # A solo run has nothing to compare and nothing to withhold: the gate exists
+    # to stop a *comparison* being published on mismatched work. When challengers
+    # were present and the gate dropped them all, though, the reference's timing
+    # is the leftover of a comparison, and printing it alone would read as one.
+    solo = len(runners) == 1
+    if REFERENCE not in published or (len(published) == 1 and not solo):
         entry["timings"] = None
-        entry["note"] = "timing withheld: unexplained disagreement between engines"
-        return entry
+        entry["note"] = "timing withheld: unexplained disagreement with the reference"
+        return
 
-    mbt_samples: List[float] = []
-    vbt_samples: List[float] = []
-    ratios: List[float] = []
-    threading_use = {"manifoldbt": _Parallelism(), "vectorbt": _Parallelism()}
+    stats = {name: _summarise(samples[name]) for name in published}
+    reference = samples[REFERENCE]
+    entry["timings"] = stats
+    entry["speedup"] = {}
+    for name in published:
+        if name == REFERENCE:
+            continue
+        ratios = [
+            other / ref if ref > 0 else float("nan")
+            for ref, other in zip(reference, samples[name])
+        ]
+        entry["speedup"][name] = {
+            "median_of_ratios": statistics.median(ratios),
+            "min": min(ratios),
+            "max": max(ratios),
+        }
+    entry["noisy"] = any(s["iqr_over_median"] > NOISE_THRESHOLD for s in stats.values())
+    entry["cpu_over_wall"] = {name: threading_use[name].ratio for name in published}
+
+    withheld = [name for name in runners if name not in published]
+    if withheld:
+        entry["withheld"] = withheld
+
+
+def measure_pair(keys: List[str], bars: int, reps: int, workdir: str,
+                 active: List[str]) -> List[Dict[str, Any]]:
+    """Measure two workloads inside ONE interleaved loop.
+
+    The report puts these two side by side to show what a performance summary
+    costs each engine. That subtraction is only legitimate if every timing comes
+    from the same stretch of machine time: measured in separate blocks, the drift
+    in absolute timings is larger than the difference being reported, and the
+    table ends up claiming the version doing more work is the faster one.
+    """
+    frame = data_mod.make_ohlcv(bars)
+    runners: Dict[str, Dict[str, Callable]] = {}
+    entries: Dict[str, Dict[str, Any]] = {}
+    for key in keys:
+        runners[key] = _prepare_all(key, frame, workdir, active)
+        verdicts = _warm_and_gate(key, runners[key])
+        entries[key] = _entry(key, bars, frame, verdicts, list(runners[key]))
+        entries[key]["paired_with"] = [k for k in keys if k != key]
+
+    samples = {key: {name: [] for name in runners[key]} for key in keys}
+    threading_use = {key: {name: _Parallelism() for name in runners[key]} for key in keys}
     for _ in range(reps):
-        t_mbt, _ = threading_use["manifoldbt"].record(run_mbt)
-        t_vbt, _ = threading_use["vectorbt"].record(run_vbt)
-        mbt_samples.append(t_mbt)
-        vbt_samples.append(t_vbt)
-        ratios.append(t_vbt / t_mbt if t_mbt > 0 else float("nan"))
+        for key in keys:
+            for name, run in runners[key].items():
+                elapsed, _ = threading_use[key][name].record(run)
+                samples[key][name].append(elapsed)
 
-    mbt_stats = _summarise(mbt_samples)
-    vbt_stats = _summarise(vbt_samples)
-    entry["timings"] = {"manifoldbt": mbt_stats, "vectorbt": vbt_stats}
-    entry["speedup"] = {
-        "median_of_ratios": statistics.median(ratios),
-        "min": min(ratios),
-        "max": max(ratios),
-    }
-    entry["noisy"] = (
-        mbt_stats["iqr_over_median"] > NOISE_THRESHOLD
-        or vbt_stats["iqr_over_median"] > NOISE_THRESHOLD
-    )
-    entry["cpu_over_wall"] = {
-        engine: threading_use[engine].ratio for engine in ("manifoldbt", "vectorbt")
-    }
+    for key in keys:
+        _collect(entries[key], runners[key], samples[key], threading_use[key])
+    return [entries[key] for key in keys]
+
+
+def measure(key: str, bars: int, reps: int, workdir: str, active: List[str]) -> Dict[str, Any]:
+    frame = data_mod.make_ohlcv(bars)
+    runners = _prepare_all(key, frame, workdir, active)
+    verdicts = _warm_and_gate(key, runners)
+    entry = _entry(key, bars, frame, verdicts, list(runners))
+
+    scales = {}
+    for name, verdict in verdicts.items():
+        if verdict["status"] != "documented":
+            continue
+        adapter = engines_mod.adapter(name)
+        measured = getattr(adapter, "diagnose", lambda *a, **k: {})(key, frame, workdir)
+        if measured:
+            scales[name] = measured
+    # The reference's own view of the divergence: which of its round-trips are
+    # the ones the others do not take. Recorded under the reference so the two
+    # sides of the subtraction sit next to each other.
+    if scales:
+        reference_view = engines_mod.adapter(REFERENCE).diagnose(key, frame, workdir)
+        if reference_view:
+            scales[REFERENCE] = reference_view
+        entry["divergence_scale"] = scales
+
+    samples = {name: [] for name in runners}
+    threading_use = {name: _Parallelism() for name in runners}
+    for _ in range(reps):
+        for name, run in runners.items():
+            elapsed, _ = threading_use[name].record(run)
+            samples[name].append(elapsed)
+
+    _collect(entry, runners, samples, threading_use)
     return entry
 
 
@@ -344,60 +398,185 @@ def _probe(mode: str, engine: str, workload: str, bars: int) -> Dict[str, Any]:
     raise RuntimeError("probe produced no result: " + out[-500:])
 
 
-def cold_start(workload: str, bars: int, reps: int) -> Dict[str, Any]:
-    """Time to a first backtest in a process that has never seen either engine.
+def cold_start(workload: str, bars: int, reps: int, active: List[str]) -> Dict[str, Any]:
+    """Time to a first backtest in a process that has never seen any engine.
 
     This is the cost the steady-state benchmark throws away as warmup, and the
     one a user actually waits through every time they open a notebook. The
     engines alternate here too, and the interpreter/numpy/pandas baseline is
-    measured alongside so the engine's own share is visible.
+    measured alongside so each engine's own share is visible.
     """
-    samples: Dict[str, List[float]] = {"manifoldbt": [], "vectorbt": [], "baseline": []}
+    order = [name for name in active if supported(workload, name)]
+    samples: Dict[str, List[float]] = {name: [] for name in order}
+    samples["baseline"] = []
     for _ in range(reps):
-        samples["manifoldbt"].append(_probe("coldstart", "mbt", workload, bars)["seconds"])
-        samples["vectorbt"].append(_probe("coldstart", "vbt", workload, bars)["seconds"])
+        for name in order:
+            samples[name].append(
+                _probe("coldstart", ENGINES[name].code, workload, bars)["seconds"])
         samples["baseline"].append(_probe("baseline", "none", workload, bars)["seconds"])
     medians = {k: statistics.median(v) for k, v in samples.items()}
     base = medians["baseline"]
+    reference = medians[REFERENCE]
     return {
         "workload": workload,
         "bars": bars,
+        "engines": order,
         "samples_s": samples,
         "median_s": medians,
-        "engine_share_s": {
-            "manifoldbt": medians["manifoldbt"] - base,
-            "vectorbt": medians["vectorbt"] - base,
+        "engine_share_s": {name: medians[name] - base for name in order},
+        "ratio": {
+            name: (medians[name] / reference if reference else None)
+            for name in order if name != REFERENCE
         },
-        "ratio": medians["vectorbt"] / medians["manifoldbt"] if medians["manifoldbt"] else None,
     }
 
 
-def memory(workload: str, bars: int) -> Dict[str, Any]:
+def memory(workload: str, bars: int, active: List[str]) -> Dict[str, Any]:
     """Resident memory each engine adds while running one backtest.
 
     vectorbt materialises the simulation as arrays, so its footprint grows with
     the series; manifoldbt streams bars out of its store. The number reported is
     what the *run* adds, measured after a warmup, not the process total: the
     one-off cost of building each engine's data representation is a different
-    question and is excluded on both sides.
+    question and is excluded on every side.
     """
-    mbt = _probe("memory", "mbt", workload, bars)
-    vbt = _probe("memory", "vbt", workload, bars)
-    return {
-        "workload": workload,
-        "bars": bars,
-        "manifoldbt": mbt,
-        "vectorbt": vbt,
-    }
+    order = [name for name in active if supported(workload, name)]
+    out: Dict[str, Any] = {"workload": workload, "bars": bars, "engines": order}
+    for name in order:
+        out[name] = _probe("memory", ENGINES[name].code, workload, bars)
+    return out
+
+
+SWEEP_CHILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sweep_child.py")
+
+
+def parse_point(spec: str) -> tuple:
+    """`bars:combos[:oos]`, e.g. `20000:5000` or `20000:100000:oos`.
+
+    The `oos` suffix declares the array-materialising engines out of scope for
+    that point: it is for grids whose vectorbt side needs tens of gigabytes,
+    where running it anyway would time the swap file rather than the engine.
+    """
+    parts = spec.split(":")
+    if len(parts) not in (2, 3) or not parts[1]:
+        raise argparse.ArgumentTypeError(
+            f"expected bars:combos or bars:combos:oos, got {spec!r}")
+    mode = "run"
+    if len(parts) == 3:
+        if parts[2] != "oos":
+            raise argparse.ArgumentTypeError(
+                f"third field must be 'oos', got {parts[2]!r}")
+        mode = "oos"
+    return int(parts[0]), int(parts[1]), mode
+
+
+def sweep(points: List[tuple], reps: int, active: List[str]) -> List[Dict[str, Any]]:
+    """Parameter-grid comparison, one point per process.
+
+    Each point is spawned rather than run inline. A large grid is the one thing
+    in this harness that can exhaust the machine, and a point that dies must
+    cost its own result and nothing else: run inline, an out-of-memory kill
+    would take the whole benchmark down and lose every number measured before
+    it. A dead child is recorded as a crashed point and the run continues.
+    """
+    out: List[Dict[str, Any]] = []
+    challengers = [n for n in active if n != REFERENCE]
+    for bars, combos, mode in points:
+        proc = subprocess.run(
+            [sys.executable, SWEEP_CHILD, "--bars", str(bars),
+             "--combos", str(combos), "--reps", str(reps),
+             "--engines", *active, "--vectorbt", mode],
+            capture_output=True, text=True,
+        )
+        payload = None
+        for line in proc.stdout.splitlines():
+            if line.startswith("{"):
+                payload = json.loads(line)
+        if payload is None:
+            # No JSON at all: the child died before it could report. Almost
+            # always the allocator, on the biggest grid of the matrix.
+            payload = {
+                "bars": bars,
+                "combos": combos,
+                "vectorbt_mode": mode,
+                "status": "crashed",
+                "reason": (proc.stderr or proc.stdout or "no output")[-400:].strip(),
+                "exit_code": proc.returncode,
+            }
+        # Memory comes from dedicated single-engine processes, never from the
+        # interleaved timing run above. Timing has to interleave the engines to
+        # be fair, and interleaving is exactly what makes a memory reading
+        # worthless: from the second repetition on, the peak sampled during one
+        # engine's call is the whole process, the other engines' allocations
+        # included. Measured both ways, manifoldbt read 6.7 GB interleaved
+        # against 94 MB alone, at 5000 combinations.
+        payload["memory"] = _sweep_memory(bars, combos, mode, active)
+        out.append(payload)
+    return out
+
+
+def _sweep_memory(bars: int, combos: int, mode: str, active: List[str]) -> Dict[str, Any]:
+    """Peak each engine adds running the grid once, one engine per process."""
+    names = [REFERENCE] if mode == "oos" else list(active)
+    added: Dict[str, Any] = {name: None for name in active}
+    for name in names:
+        proc = subprocess.run(
+            [sys.executable, SWEEP_CHILD, "--bars", str(bars),
+             "--combos", str(combos), "--memory-only", ENGINES[name].code],
+            capture_output=True, text=True,
+        )
+        for line in proc.stdout.splitlines():
+            if line.startswith("{"):
+                added[name] = json.loads(line)["added_mb"]
+    return added
+
+
+def run_sweeps(points: List[tuple], reps: int, active: List[str]) -> tuple:
+    """Drive the sweep matrix and print one line per point. Returns (entries, failures).
+
+    Three outcomes count as failures, and the distinction matters:
+
+    * ``failed``  - the engines disagreed on a grid nobody predicted. The gate.
+    * ``crashed`` - the point could not be measured at all.
+    * ``skipped`` - the point asked for a timing the process was not licensed to
+      produce. Silent here would be the worst outcome of all: the matrix would
+      simply come back short, and a table missing its largest grid reads like a
+      choice rather than a failure.
+    """
+    entries = sweep(points, reps, active)
+    failures = 0
+    for e in entries:
+        head = "  sweep {b:>9,} bars x {c:>6,} combos ... ".format(
+            b=e["bars"], c=e["combos"])
+        status = e.get("status") or e.get("parity", {}).get("status", "?")
+        ratios = (e.get("timings") or {}).get("ratio") or {}
+        if ratios:
+            print(head + "{s:10s} ".format(s=status) + ", ".join(
+                "{n} x{r:.1f}".format(n=name, r=ratio) for name, ratio in ratios.items()))
+        elif e.get("timings"):
+            print(head + "{s:10s} {ref} {t:.2f} s, challengers out of scope".format(
+                s=status, ref=REFERENCE, t=e["timings"]["seconds"][REFERENCE]))
+        else:
+            print(head + "{s:10s} {why}".format(
+                s=status, why=e.get("reason") or e.get("note") or "no timing"))
+            failures += 1
+    return entries, failures
 
 
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 def main() -> int:
-    parser = argparse.ArgumentParser(description="manifoldbt vs vectorbt")
+    parser = argparse.ArgumentParser(description="manifoldbt against other engines")
     parser.add_argument("--bars", type=int, nargs="+", default=[10_000, 100_000, 1_000_000])
     parser.add_argument("--workloads", nargs="+", default=DEFAULT_KEYS, choices=DEFAULT_KEYS)
+    parser.add_argument("--engines", nargs="*", default=CHALLENGERS, choices=CHALLENGERS,
+                        help="challengers to run against " + REFERENCE + ". Pass it "
+                             "with no value for a solo run: no comparison, no "
+                             "ratios, just what the engine costs. That is a "
+                             "regression tracker rather than a benchmark, and it "
+                             "is the only shape whose wall time is the engine's "
+                             "own rather than the slowest challenger's.")
     parser.add_argument("--reps", type=int, default=7)
     parser.add_argument("--out", default="results.json")
     parser.add_argument("--workdir", default=None, help="where the engine store is built")
@@ -405,11 +584,32 @@ def main() -> int:
                         help="0 disables the cold-start probe")
     parser.add_argument("--memory-bars", type=int, default=0,
                         help="bars for the memory probe; 0 disables it")
+    parser.add_argument("--sweep", type=parse_point, nargs="*", default=[],
+                        metavar="BARS:COMBOS",
+                        help="parameter-grid points, e.g. 20000:5000. Needs a "
+                             "licence: an unlicensed fan-out call waits out a "
+                             "fixed interval, so the stopwatch would be timing "
+                             "the wait rather than the engine")
+    parser.add_argument("--sweep-reps", type=int, default=3,
+                        help="repetitions per sweep point; fewer than --reps "
+                             "because a large grid costs seconds, not milliseconds")
     parser.add_argument("--pin-cores", type=int, default=0,
                         help="restrict the process to N logical cores, so a big "
                              "workstation can reproduce what a small cloud runner "
                              "sees; 0 leaves the machine alone")
     args = parser.parse_args()
+
+    if not engines_mod.installed(REFERENCE):
+        print("cannot run: the reference engine ({}) is not installed".format(REFERENCE))
+        return 2
+    active = [REFERENCE] + engines_mod.present(args.engines)
+    for name in args.engines:
+        if name not in active:
+            # Not fatal: somebody benchmarking on their own machine should not
+            # have to install every competitor to read their own numbers. It is
+            # loud, though, because on a runner it means the lock file did not
+            # do its job.
+            print("skipping {}: not installed".format(name))
 
     pinned = None
     if args.pin_cores:
@@ -422,11 +622,13 @@ def main() -> int:
         except Exception as exc:            # macOS has no affinity API
             print("could not pin to {} cores: {}".format(args.pin_cores, exc))
 
-    workdir = args.workdir or tempfile.mkdtemp(prefix="mbt_vs_vbt_")
+    workdir = args.workdir or tempfile.mkdtemp(prefix="mbt_bench_")
     env = environment()
     env["pinned_cores"] = pinned
+    env["engines"] = active
     versions = env["versions"]
-    print("manifoldbt " + versions["manifoldbt"] + " vs vectorbt " + versions["vectorbt"])
+    print(" vs ".join(
+        "{} {}".format(name, versions[ENGINES[name].distribution]) for name in active))
     print("{cpu} | {cores} logical cores | {ram} GB | {os} {arch}".format(
         cpu=env["cpu"], cores=env["logical_cores"], ram=env["ram_gb"],
         os=env["os"], arch=env["arch"]))
@@ -435,16 +637,19 @@ def main() -> int:
     print(str(args.reps) + " interleaved repetitions per point\n")
 
     def announce(entry: Dict[str, Any]) -> bool:
-        status = entry["parity"]["status"]
         print("  {k:18s} {b:>9,} bars ... ".format(k=entry["workload"], b=entry["bars"]),
               end="", flush=True)
-        if entry.get("timings"):
-            print("{s:10s} manifoldbt x{v:.1f}{m}".format(
-                s=status, v=entry["speedup"]["median_of_ratios"],
-                m=" NOISY" if entry.get("noisy") else ""))
-            return False
-        print("{s:10s} timing withheld".format(s=status))
-        return True
+        if not entry.get("timings"):
+            print("{s:10s} timing withheld".format(s=entry["status"]))
+            return True
+        speeds = ", ".join(
+            "{n} x{v:.1f}".format(n=name, v=s["median_of_ratios"])
+            for name, s in entry["speedup"].items()
+        ) or "no challenger"
+        print("{s:10s} {speeds}{m}".format(
+            s=entry["status"], speeds=speeds,
+            m=" NOISY" if entry.get("noisy") else ""))
+        return entry["status"] == "failed"
 
     # The scope pair is measured together; everything else one workload at a time.
     paired = [k for k in SCOPE_PAIR if k in args.workloads]
@@ -454,38 +659,56 @@ def main() -> int:
     failures = 0
     for bars in args.bars:
         if len(paired) > 1:
-            for entry in measure_pair(paired, bars, args.reps, workdir):
+            for entry in measure_pair(paired, bars, args.reps, workdir, active):
                 results.append(entry)
                 failures += announce(entry)
     for key in singles + (paired if len(paired) == 1 else []):
         for bars in args.bars:
-            entry = measure(key, bars, args.reps, workdir)
+            entry = measure(key, bars, args.reps, workdir, active)
             results.append(entry)
             failures += announce(entry)
+
+    # The side probes run on the first workload every active engine supports, so
+    # a cold-start table cannot come back missing a column because the workload
+    # happened to be one somebody sits out.
+    probe_workload = next(
+        (k for k in args.workloads if all(supported(k, n) for n in active)),
+        args.workloads[0],
+    )
 
     cold = None
     if args.cold_start_reps:
         print("")
         print("  cold start ... ", end="", flush=True)
-        cold = cold_start(args.workloads[0], 20_000, args.cold_start_reps)
-        print("manifoldbt {:.2f} s vs vectorbt {:.2f} s (x{:.1f})".format(
-            cold["median_s"]["manifoldbt"], cold["median_s"]["vectorbt"], cold["ratio"]))
+        cold = cold_start(probe_workload, 20_000, args.cold_start_reps, active)
+        print(", ".join("{n} {t:.2f} s".format(n=name, t=cold["median_s"][name])
+                        for name in cold["engines"]))
 
     mem = None
     if args.memory_bars:
         print("  memory     ... ", end="", flush=True)
-        mem = memory(args.workloads[0], args.memory_bars)
-        print("manifoldbt +{:.0f} MB vs vectorbt +{:.0f} MB at {:,} bars".format(
-            mem["manifoldbt"]["added_mb"], mem["vectorbt"]["added_mb"], args.memory_bars))
+        mem = memory(probe_workload, args.memory_bars, active)
+        print(", ".join("{n} +{v:.0f} MB".format(n=name, v=mem[name]["added_mb"])
+                        for name in mem["engines"]))
+
+    sweeps = None
+    if args.sweep:
+        print("")
+        sweeps, sweep_failures = run_sweeps(args.sweep, args.sweep_reps, active)
+        failures += sweep_failures
 
     payload = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "environment": env,
+        "reference": REFERENCE,
+        "engines": active,
         "reps": args.reps,
         "results": results,
         "cold_start": cold,
         "memory": mem,
+        "sweeps": sweeps,
+        "sweep_reps": args.sweep_reps if args.sweep else None,
     }
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
