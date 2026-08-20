@@ -38,7 +38,16 @@ permissions:
 
 concurrency:
   group: bench-vs-vectorbt-${{ github.ref }}
-  cancel-in-progress: true
+  # A manual run is never superseded, so it is never cancelled. Cancelling in
+  # flight is the right default for a CI triggered by pushes, where a newer
+  # commit makes an older run pointless; here it threw away ten minutes of
+  # measurement because somebody pressed the button twice, three times in one
+  # afternoon, and left a trail of cancelled runs in a list whose whole job is
+  # to be readable by someone checking the numbers.
+  #
+  # A release or the weekly cron still supersedes: there, an older run really is
+  # measuring a version nobody is asking about any more.
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   bench:
