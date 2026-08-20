@@ -59,6 +59,10 @@ class Workload:
     title: str
     why: str
     params: Dict[str, Any] = field(default_factory=dict)
+    # Longest series this workload is valid on, or None for no ceiling. A
+    # workload can stop being a comparison before it stops running: see the fee
+    # workload, whose account this exists to keep alive.
+    max_bars: int | None = None
     # Engine name -> Note. An engine with no entry here is expected to agree
     # with the reference down to float-reordering noise, and a disagreement is
     # a failure that withholds the timing.
@@ -70,11 +74,11 @@ WORKLOADS: Dict[str, Workload] = {
     for w in (
         Workload(
             key="sma_cross",
-            title="SMA 10/50 crossover, long-only, no cost",
+            title="SMA 30/150 crossover, long-only, no cost",
             why="The canonical baseline. Unambiguous indicator, no fee policy, "
                 "no stop semantics: if the engines disagree here, nothing else "
                 "in the suite is worth reading.",
-            params=dict(fast=10, slow=50, alloc=1.0),
+            params=dict(fast=30, slow=150, alloc=1.0),
         ),
         Workload(
             key="ema_rsi_fees",
@@ -87,6 +91,14 @@ WORKLOADS: Dict[str, Workload] = {
                 "engines on a wiped-out account compares rounding noise.",
             params=dict(fast=12, slow=26, rsi_period=14, rsi_lo=30.0, rsi_hi=70.0,
                         units=5.0, fee_bps=5.0),
+            # The account has to survive, or the engines are being compared on
+            # rounding noise around zero. Measured: -15% of capital at 1M bars,
+            # -74% at 5M, and exactly -100% at 10M, where fees reach 99,611 of
+            # the 100,000 started with. Past that the two disagree by thousands
+            # of round-trips while both sit at zero equity, which is a fact
+            # about a bankrupt strategy and not about either engine. The ceiling
+            # is set where the comparison still means something.
+            max_bars=1_000_000,
             notes={
                 "raptorbt": Note(
                     "unsupported",
@@ -110,7 +122,7 @@ WORKLOADS: Dict[str, Workload] = {
         ),
         Workload(
             key="sma_cross_metrics",
-            title="SMA 10/50 crossover, with a performance summary",
+            title="SMA 30/150 crossover, with a performance summary",
             why="The same simulation as `sma_cross`, but both engines are asked "
                 "for what a user actually reads: max drawdown, Sharpe, Sortino "
                 "and volatility alongside the return. manifoldbt computes them "
@@ -120,7 +132,7 @@ WORKLOADS: Dict[str, Workload] = {
                 "`sma_cross` above is the same work without the summary, and the "
                 "two are reported side by side so the reader can see what the "
                 "summary costs each engine.",
-            params=dict(fast=10, slow=50, alloc=1.0, metrics=True),
+            params=dict(fast=30, slow=150, alloc=1.0, metrics=True),
         ),
         Workload(
             key="bracket_sl_tp",

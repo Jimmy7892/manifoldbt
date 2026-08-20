@@ -55,6 +55,19 @@ from workloads import (  # noqa: E402
     unsupported_by,
 )
 
+
+def _in_range(key: str, bars: int) -> bool:
+    """Is this workload still a comparison at this series length?
+
+    A ceiling is not a performance limit, it is a validity one. The fee workload
+    bankrupts its account past a certain length, and two engines agreeing that a
+    dead account is worth zero is not a measurement. Skipping is loud in the run
+    output rather than silent, because a table that is short by one row reads
+    like a choice.
+    """
+    ceiling = WORKLOADS[key].max_bars
+    return ceiling is None or bars <= ceiling
+
 # 2: timings, parity and speedups became per-engine maps when the harness grew
 # past two engines. `report.py` reads version 1 files as well, so the results
 # archived under results/ stay readable.
@@ -655,15 +668,31 @@ def main() -> int:
     paired = [k for k in SCOPE_PAIR if k in args.workloads]
     singles = [k for k in args.workloads if k not in paired]
 
+    def skip(key: str, bars: int) -> None:
+        print("  {k:18s} {b:>12,} bars ... skipped    beyond this workload's "
+              "ceiling of {c:,} bars".format(
+                  k=key, b=bars, c=WORKLOADS[key].max_bars))
+
     results = []
     failures = 0
     for bars in args.bars:
-        if len(paired) > 1:
-            for entry in measure_pair(paired, bars, args.reps, workdir, active):
+        runnable = [k for k in paired if _in_range(k, bars)]
+        for key in paired:
+            if key not in runnable:
+                skip(key, bars)
+        if len(runnable) > 1:
+            for entry in measure_pair(runnable, bars, args.reps, workdir, active):
                 results.append(entry)
                 failures += announce(entry)
-    for key in singles + (paired if len(paired) == 1 else []):
+        elif runnable:
+            entry = measure(runnable[0], bars, args.reps, workdir, active)
+            results.append(entry)
+            failures += announce(entry)
+    for key in singles:
         for bars in args.bars:
+            if not _in_range(key, bars):
+                skip(key, bars)
+                continue
             entry = measure(key, bars, args.reps, workdir, active)
             results.append(entry)
             failures += announce(entry)
@@ -672,7 +701,8 @@ def main() -> int:
     # a cold-start table cannot come back missing a column because the workload
     # happened to be one somebody sits out.
     probe_workload = next(
-        (k for k in args.workloads if all(supported(k, n) for n in active)),
+        (k for k in args.workloads
+         if all(supported(k, n) for n in active) and _in_range(k, 20_000)),
         args.workloads[0],
     )
 
