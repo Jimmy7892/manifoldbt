@@ -85,10 +85,46 @@ store)`, the documented entry point, not through an internal fast path.
 
 | Workload | What it exercises | vectorbt | raptorbt |
 |---|---|---|---|
-| `sma_cross` | SMA 10/50 crossover, long-only, no cost | exact | exact |
-| `ema_rsi_fees` | EMA 12/26 crossover with an RSI(14) filter and a 5 bps taker fee | exact | unsupported |
+| `sma_cross` | SMA 30/150 crossover, long-only, no cost | exact | exact |
+| `ema_rsi_fees` | EMA 12/26 crossover with an RSI(14) filter and a 5 bps taker fee, capped at 1M bars | exact | unsupported |
 | `sma_cross_metrics` | the same simulation, plus max drawdown, Sharpe, Sortino and volatility | exact | exact |
 | `bracket_sl_tp` | the same entry with a 15 bps stop and a 30 bps target | documented | documented |
+
+### Why the fee workload stops at 1M bars
+
+A workload can stop being a comparison before it stops running. `ema_rsi_fees`
+sizes in fixed units and pays 5 bps a side, and at 1-minute resolution it turns
+over often enough that the fees compound into the account: measured, it ends at
+-15% of capital on 1M bars, -74% on 5M, and exactly -100% on 10M, where fees
+reach 99,611 of the 100,000 it started with.
+
+Past that point the engines still agree on the equity, because both are sitting
+at zero, and disagree by thousands of round-trips about how many more worthless
+trades to book on a dead account. That is a fact about a bankrupt strategy, not
+about either engine, so the workload carries a ceiling and the runner skips it
+above that with the reason printed. The other workloads have no ceiling.
+
+### What the windows are, and why they moved
+
+`sma_cross` crosses on 30/150 rather than 10/50. The two were measured against
+each other on the same 5M bars, and the slower pair is worth about 15% on the
+ratio (x267 against x232 with a performance summary) because it books a third of
+the trades and manifoldbt's cost, unlike vectorbt's, moves with the trade count.
+
+That is a real effect and a small one, and it is worth knowing which way the
+knobs turn before anyone quotes a number:
+
+| Turn up | Effect on the ratio | Why |
+|---|---|---|
+| series length | **widens** | vectorbt materialises the simulation; its cost is linear in bars |
+| asking for the summary | **widens sharply** | it has to build the equity curve it deferred |
+| number of trades | narrows | near-free for vectorbt's per-bar loop, real for manifoldbt |
+| number of indicators | narrows | same reason |
+
+Measured at 5M bars on four levels of turnover, the ratio runs from x40 at
+480,000 round-trips to x71 at 2,500. The floor matters more than the peak: even
+in the busiest configuration tested, with half a million round-trips, the gap
+holds at x40, and x151 with a performance summary.
 
 Each of those runs across a range of series lengths. Two further axes, cold
 start and memory, are measured in their own processes because they cannot be
@@ -254,7 +290,29 @@ On the raptorbt side specifically:
 - `bench.py` - the runner
 - `sweep_child.py` - one parameter-grid point, in its own process
 - `report.py` - JSON to Markdown, and to the GitHub job summary
+- `ci_activate.py` - activates the licence the grid job needs, and refuses to
+  continue without one
 - `ci/bench-vs-vectorbt.yml` - the workflow, deployed to the public repository
+
+## Parameter grids
+
+Grids run in their own CI job, because they need a licence: an unlicensed
+fan-out call waits out a fixed interval before doing any work, so a stopwatch
+would be timing the wait rather than the engine. The harness refuses to produce
+a number in that state rather than producing a wrong one.
+
+Three points, chosen from a measured map of the plane rather than picked. Across
+bars from 5,000 to 200,000 and grids from 500 to 10,000 combinations, the ratio
+on four cores moves only between x32 and x38, so a denser matrix would spend
+runner time re-measuring the same number. What the three points carry is the
+shape: two grid sizes at one series length, and one grid vectorbt cannot hold at
+all (it materialises the simulation per combination, measured at 3.93 MB per
+combination on 50,000 bars).
+
+Grid ratios are much more sensitive to core count than single backtests are,
+because manifoldbt is the only one of the three that fans out across cores:
+measured on the same point, x38 on four cores and x146 on twenty. Numbers from
+the CI job are four-core numbers, and they are the conservative ones.
 
 The directory is still named `vs_vectorbt` and the workflow file still
 `bench-vs-vectorbt.yml`: renaming either would break the path the public
