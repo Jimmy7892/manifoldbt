@@ -61,6 +61,19 @@ def make_ohlcv(
     )
 
 
+def make_universe(rows: int, count: int, *, seed: int = DEFAULT_SEED) -> dict:
+    """`count` independent series, keyed by the symbol id each engine will use.
+
+    Independent, not correlated: a portfolio of copies of one asset would let a
+    position-sizing bug cancel itself out across the book, which is exactly the
+    class of mistake a multi-asset workload exists to catch. The seeds are
+    spaced far apart and derived from the same base, so the whole universe is
+    reproducible from `seed` alone and the first symbol is bit-identical to the
+    single-asset series of the same length.
+    """
+    return {i + 1: make_ohlcv(rows, seed=seed + 1000 * i) for i in range(count)}
+
+
 def digest(df: pd.DataFrame) -> str:
     """Short content fingerprint of the bars, recorded in the result envelope.
 

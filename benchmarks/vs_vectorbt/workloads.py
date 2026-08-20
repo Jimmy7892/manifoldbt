@@ -135,6 +135,59 @@ WORKLOADS: Dict[str, Workload] = {
             params=dict(fast=30, slow=150, alloc=1.0, metrics=True),
         ),
         Workload(
+            key="sma_cross_costs",
+            title="SMA 30/150 with a 5 bps fee and 2 bps of slippage",
+            why="The same signal as the headline workload, run against a cost "
+                "model. Costs were the easiest objection to make of a benchmark "
+                "that had them on one workload out of four, and the answer is "
+                "not to sprinkle them everywhere: measured, a fee or a slippage "
+                "on FractionOfEquity sizing makes the engines disagree by 1e-4 "
+                "of capital against a 1e-9 tolerance, because they resolve the "
+                "same policy differently. In fixed units the arithmetic is "
+                "comparable and both costs land exactly, so this is where they "
+                "belong.",
+            params=dict(fast=30, slow=150, units=5.0, fee_bps=5.0, slippage_bps=2.0),
+            notes={
+                "raptorbt": Note(
+                    "unsupported",
+                    "Same blocker as the other fixed-quantity workload: raptorbt "
+                    "has no units sizing, and a cost model on top of a fraction "
+                    "of equity compares policy rather than arithmetic. See "
+                    "`ema_rsi_fees` for the measurements behind that.",
+                ),
+            },
+        ),
+        Workload(
+            key="multi_asset",
+            title="Five assets in one book, SMA 30/150, 5 bps fee",
+            why="A single-asset benchmark measures a loop; a portfolio measures "
+                "the thing people actually run. It is also where the two designs "
+                "differ in kind rather than in speed: manifoldbt walks a universe "
+                "against one shared book, while vectorbt broadcasts a column per "
+                "asset and has to be told to share cash at all. The five series "
+                "are independent rather than correlated, so a sizing bug cannot "
+                "cancel itself out across the book.",
+            params=dict(fast=30, slow=150, units=2.0, fee_bps=5.0, assets=5),
+            # Five columns of a materialised simulation, not one. vectorbt adds
+            # 1.55 GB on a 10M-bar single asset, so five of them would ask a
+            # 16 GB runner for around 8 GB on top of 2.4 GB of generated frames.
+            # The ceiling is set where the point is certain to be measuring the
+            # engine rather than the swap file.
+            max_bars=1_000_000,
+            notes={
+                "raptorbt": Note(
+                    "unsupported",
+                    "No multi-instrument portfolio on the entry point this "
+                    "harness drives: `run_single_backtest` is one instrument, and "
+                    "`run_multi_backtest` broadcasts over strategies rather than "
+                    "over assets. 0.9.0 does add `run_portfolio_backtest`, but "
+                    "its allocation model is a different one and would need its "
+                    "own parity work before any timing from it could be "
+                    "published. The units blocker applies here too.",
+                ),
+            },
+        ),
+        Workload(
             key="bracket_sl_tp",
             title="SMA 10/50 entry with a 15 bps stop / 30 bps target bracket",
             why="Brackets are where two engines most easily disagree: the stop "
