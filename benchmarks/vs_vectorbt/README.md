@@ -290,30 +290,36 @@ On the raptorbt side specifically:
 - `bench.py` - the runner
 - `sweep_child.py` - one parameter-grid point, in its own process
 - `report.py` - JSON to Markdown, and to the GitHub job summary
-- `ci_activate.py` - activates the licence the grid job needs, and refuses to
+- `ci_activate.py` - activates the licence the sweep job needs, and refuses to
   continue without one
 - `ci/bench-vs-vectorbt.yml` - the workflow, deployed to the public repository
 
-## Parameter grids
+## Parameter sweeps
 
-Grids run in their own CI job, because they need a licence: an unlicensed
+Sweeps run in their own CI job, because they need a licence: an unlicensed
 fan-out call waits out a fixed interval before doing any work, so a stopwatch
-would be timing the wait rather than the engine. The harness refuses to produce
-a number in that state rather than producing a wrong one.
+would be timing the wait. The harness refuses to produce a number in that state
+rather than producing a wrong one.
 
-Three points, chosen from a measured map of the plane rather than picked. Across
-bars from 5,000 to 200,000 and grids from 500 to 10,000 combinations, the ratio
-on four cores moves only between x32 and x38, so a denser matrix would spend
-runner time re-measuring the same number. What the three points carry is the
-shape: two grid sizes at one series length, and one grid vectorbt cannot hold at
-all (it materialises the simulation per combination, measured at 3.93 MB per
-combination on 50,000 bars).
+Three points, sized from what the runner actually did rather than guessed.
+Measured there: 87.5 us per combination for manifoldbt at 20,000 bars, 1.16 ms
+for vectorbt, 1.34 ms for raptorbt, and 15.0 ms for raptorbt at 200,000 bars.
 
-Grid ratios are much more sensitive to core count than single backtests are,
-because manifoldbt is the only one of the three that fans out across cores:
-measured on the same point, x38 on four cores and x146 on twenty. Numbers from
-the CI job are four-core numbers, and they are the conservative ones.
+Only the first point is one vectorbt can hold. It materialises the simulation
+per combination -- 1.57 MB of it at 20,000 bars -- so 5,000 combinations already
+cost it 2.5 GB and 20,000 would need 31 GB. The other two are out of its scope,
+and that is where a sweep stops being a speed comparison and becomes a
+capability one: the question is no longer how long it takes but whether the
+machine can hold it at all.
 
-The directory is still named `vs_vectorbt` and the workflow file still
-`bench-vs-vectorbt.yml`: renaming either would break the path the public
-repository runs and start a fresh, empty run history.
+raptorbt sets the time budget rather than manifoldbt. With no fan-out API for a
+parameter grid on one instrument, its sweep is a Python loop costing a full
+backtest per cell, which is why the large point goes deep in combinations on a
+short series instead of the reverse: 20,000 combinations on 20,000 bars costs it
+27 seconds a call, where 5,000 combinations on a million bars would cost it 25
+minutes.
+
+Sweep ratios depend on the machine far more than single-backtest ratios do,
+because manifoldbt is the only one of the three that fans out across cores. The
+same point measured x13 on a four-vCPU cloud runner and x32 on two fast desktop
+cores; the CI numbers are the conservative ones, and they are the ones published.
