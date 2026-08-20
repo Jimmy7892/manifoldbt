@@ -236,3 +236,63 @@ jobs:
           name: bench-sweeps
           path: benchmarks/vs_vectorbt/results-sweeps.json
           if-no-files-found: warn
+
+  # ------------------------------------------------------------------------ #
+  # Publish, so the numbers live somewhere that is not an artifact
+  # ------------------------------------------------------------------------ #
+  publish:
+    name: publish results
+    runs-on: ubuntu-latest
+    # Only a run where both halves came back green gets published. A partial
+    # result is worse than a stale one: the website renders whatever this file
+    # says, and a missing sweep table reads as a choice rather than a crash.
+    needs: [bench, sweeps]
+    # A dispatch that pins an old version is a question somebody asked, not the
+    # current state of the engine, so it measures and reports without becoming
+    # the published number.
+    if: github.event_name != 'workflow_dispatch' || inputs.manifoldbt_version == ''
+    permissions:
+      contents: write
+    steps:
+      # The default branch explicitly: a release run is checked out at a tag,
+      # and there is nothing to push a commit onto there.
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Merge the run into one published result
+        shell: bash
+        run: |
+          python benchmarks/vs_vectorbt/publish.py artifacts \
+            --out benchmarks/vs_vectorbt/results/latest.json
+
+      # Committed, not uploaded: an artifact needs a token to download and
+      # expires after ninety days, so anything outside GitHub that wants these
+      # numbers needs them at a plain URL. This is that URL.
+      - name: Commit it, if it moved
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/vs_vectorbt/results/latest.json
+          if git diff --cached --quiet; then
+            echo "identical to the published result: nothing to commit"
+            exit 0
+          fi
+          # [skip ci] because a results file is not a code change, and running
+          # the test suite over it would only add a red herring to the log.
+          git commit -m "bench: publish results from run ${GITHUB_RUN_ID} [skip ci]"
+          # Another run may have landed while this one was measuring.
+          git pull --rebase origin master
+          git push origin HEAD:master
