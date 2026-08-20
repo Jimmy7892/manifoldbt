@@ -42,7 +42,10 @@ concurrency:
 
 jobs:
   bench:
-    name: ${{ matrix.os }}
+    # Named for what the job measures, not for the runner it landed on. The
+    # runner is already on the row; what a reader needs from the job list is
+    # which half of the benchmark it is.
+    name: backtests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # A published release is not always a released version. The preview tags
     # 0.18.0rc1 and rc2 went to the public repository without ever reaching
@@ -56,22 +59,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Three lengths, not five. 10k was sub-millisecond on the engine
-          # side, which measures the clock rather than the work, and 5M sat
-          # between two points that already bracket it. What is left is a
-          # decade apart each step, which is what makes the trend readable.
+          # Linux only, on purpose. The other two runners were carried for a
+          # reason that does not survive examination: they were the only place
+          # anything installed the published wheel on Windows or macOS, which
+          # made this benchmark a smoke test by accident. That check is worth
+          # having and worth 40 seconds next to the build in release.yml, not 13
+          # minutes inside a performance measurement, and nobody reads a
+          # benchmark to find out whether a package imports.
+          #
+          # What is lost is a per-platform timing, which was never quoted: the
+          # numbers that get published are the Linux ones. Adding a platform
+          # back is one entry here.
           - os: ubuntu-latest
             bars: "100000 1000000 10000000"
-          - os: windows-latest
-            bars: "100000 1000000 10000000"
-          # macOS runners ship 7 GB of RAM against 16 GB elsewhere, and vectorbt
-          # materialises the simulation in memory (roughly 150 MB per million
-          # bars, measured). The top size is trimmed so a point is never lost to
-          # swapping, which would time the disk instead of the engine. The same
-          # arithmetic is why 10M bars is added on the other two and not here:
-          # measured, that point adds 1.55 GB on vectorbt's side alone.
-          - os: macos-latest
-            bars: "100000 1000000"
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -152,7 +152,7 @@ jobs:
   # Parameter grids, which need a licence and therefore a job of their own
   # ------------------------------------------------------------------------ #
   sweeps:
-    name: sweeps (ubuntu)
+    name: grids (ubuntu-latest)
     runs-on: ubuntu-latest
     if: github.event_name != 'release' || github.event.release.prerelease == false
     timeout-minutes: 45
