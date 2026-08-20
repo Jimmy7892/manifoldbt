@@ -1,11 +1,11 @@
-# manifoldbt vs vectorbt
+# manifoldbt vs vectorbt vs raptorbt
 
-An engine-to-engine benchmark you can re-run yourself. It installs both engines
-from PyPI, generates its own data, checks that the two engines produced the
-**same result**, and only then reports how long each took.
+An engine-to-engine benchmark you can re-run yourself. It installs every engine
+from PyPI, generates its own data, checks that they produced the **same
+result**, and only then reports how long each took.
 
 ```bash
-pip install manifoldbt vectorbt
+pip install manifoldbt
 pip install -r requirements-lock.txt
 python bench.py --bars 10000 100000 1000000 --reps 7 --cold-start-reps 3 --memory-bars 2000000 --out results.json
 python report.py results.json
@@ -15,22 +15,41 @@ No dataset to download, no API key, no configuration. The same command runs in
 GitHub Actions on a public runner, so every published number has a run URL
 behind it.
 
+**Python 3.12, and not by preference.** raptorbt is built against pyo3 0.20.3,
+whose maximum supported CPython is 3.12: no release up to 0.9.0 publishes a
+cp313 wheel, and a source build refuses outright. Comparing engines means
+running them in one environment, and the environment has to be one all of them
+support. Add or drop a challenger with `--engines`; an engine that is not
+installed is skipped with a printed line rather than crashing the run.
+
+**manifoldbt is the reference.** Every parity check and every ratio is a
+challenger against it, never two challengers against each other: three engines
+make three pairs, and a table of pairs is a matrix, not a benchmark. The
+reference gets no advantage from the position, it is simply the one every
+timing is divided by.
+
 ## The rule this harness is built around
 
-A speed comparison between two backtesters is worthless unless both engines did
-the same work. So parity comes first:
+A speed comparison between backtesters is worthless unless they did the same
+work. So parity comes first:
 
 1. each workload runs once per engine;
-2. total return, round-trip count and fees are compared;
-3. **a workload the engines disagree on gets no published timing.**
+2. total return, round-trip count and fees are compared against the reference;
+3. **a workload an engine disagrees on gets no published timing for it.**
 
 Three verdicts come out of that gate:
 
 | Verdict | Meaning | What gets published |
 |---|---|---|
 | `exact` | agreement down to float-reordering noise (relative tolerance 1e-9) | the timing, in the headline table |
-| `documented` | the engines disagree, the workload declared it in advance, and the cause is written down | the timing, in an annex, with the cause and its measured size |
-| `failed` | the engines disagree and nobody predicted it | nothing. The run exits non-zero |
+| `documented` | that engine disagrees, the workload declared it in advance *for that engine*, and the cause is written down | the timing, in an annex, with the cause and its measured size |
+| `failed` | it disagrees and nobody predicted it | nothing. The run exits non-zero |
+
+A fourth outcome sits beside the gate rather than inside it. `unsupported`
+means an engine cannot express the workload at all: it is not run, and the
+report prints the reason instead of an empty cell. A blank in a speed table
+reads as a defeat, and "this engine has no fixed-quantity sizing" is not a
+defeat, it is a different fact.
 
 The `failed` path is not decoration. It is the reason the other numbers can be
 trusted, and it makes the benchmark fail loudly if a future release of either
@@ -64,12 +83,12 @@ store)`, the documented entry point, not through an internal fast path.
 
 ## What is compared
 
-| Workload | What it exercises | Parity |
-|---|---|---|
-| `sma_cross` | SMA 10/50 crossover, long-only, no cost | exact |
-| `ema_rsi_fees` | EMA 12/26 crossover with an RSI(14) filter and a 5 bps taker fee | exact |
-| `sma_cross_metrics` | the same simulation, plus max drawdown, Sharpe, Sortino and volatility | exact |
-| `bracket_sl_tp` | the same entry with a 15 bps stop and a 30 bps target | documented divergence |
+| Workload | What it exercises | vectorbt | raptorbt |
+|---|---|---|---|
+| `sma_cross` | SMA 10/50 crossover, long-only, no cost | exact | exact |
+| `ema_rsi_fees` | EMA 12/26 crossover with an RSI(14) filter and a 5 bps taker fee | exact | unsupported |
+| `sma_cross_metrics` | the same simulation, plus max drawdown, Sharpe, Sortino and volatility | exact | exact |
+| `bracket_sl_tp` | the same entry with a 15 bps stop and a 30 bps target | documented | documented |
 
 Each of those runs across a range of series lengths. Two further axes, cold
 start and memory, are measured in their own processes because they cannot be
@@ -77,15 +96,25 @@ measured honestly inside the main one.
 
 **Scope, stated twice on purpose.** `sma_cross` and `sma_cross_metrics` run the
 identical simulation; only the second one also produces a performance summary.
-manifoldbt computes that summary inside `run()` whether or not you read it,
-while vectorbt defers the equity curve until a risk metric asks for it and then
-pays to materialise it. Reporting both scopes is the only honest way to present
-the result: a reader who only wants a total return should look at the first
-number, and a reader who wants a Sharpe should look at the second. Parity on the
-summary workload is gated on total return, round-trip count and max drawdown,
-which match exactly; the ratios agree to about 3e-4, because manifoldbt buckets
-its daily returns slightly differently, and that residual is reported rather
-than smoothed over.
+manifoldbt and raptorbt both compute that summary inside the run whether or not
+you read it, while vectorbt defers the equity curve until a risk metric asks for
+it and then pays to materialise it. Reporting both scopes is the only honest way
+to present the result: a reader who only wants a total return should look at the
+first number, and a reader who wants a Sharpe should look at the second. Parity
+on the summary workload is gated on total return, round-trip count and max
+drawdown, which match exactly across all three; the vectorbt ratios agree to
+about 3e-4, because manifoldbt buckets its daily returns slightly differently,
+and that residual is reported rather than smoothed over.
+
+raptorbt annualises its ratios on its own basis and moves that basis between
+releases (the same run reads Sharpe 0.21 on 0.4.1 and 3.43 on 0.9.0, against
+manifoldbt's 8.14), so its Sharpe and Sortino are recorded but not compared:
+subtracting them from the reference would publish a units mismatch as a
+disagreement. It reports no volatility at all, and the harness leaves that cell
+empty rather than recomputing it from the equity curve, which would credit
+raptorbt with the harness's own arithmetic. None of this touches the gate, which
+runs on money, round-trips and drawdown, all three basis-free. Its drawdown
+matches the reference to 4e-15.
 
 The vectorbt side of the summary is written out in pandas rather than through
 `pf.sharpe_ratio()` for two reasons, both in vectorbt's favour or neutral.
@@ -110,6 +139,26 @@ data: building each engine's data representation is a different question and is
 excluded on both sides, in manifoldbt's case a deliberately unflattering choice
 since its one-off ingest is the memory-hungry part.
 
+### Why raptorbt sits out the fee workload
+
+Two blockers, either one sufficient, both measured rather than assumed.
+
+*Sizing.* raptorbt has no fixed-quantity mode. `position_sizes` is a fraction of
+equity (a constant 0.5 buys exactly half the equity of the bar before the entry),
+`lot_size` rounds a computed size down to a multiple of itself, and
+`alloted_capital` fixes the notional rather than the quantity. Reproducing
+`units=5` would mean feeding a fraction derived from an equity curve that does
+not exist until the run is over.
+
+*Indicator.* `raptorbt.ema` seeds on a simple mean of the first `period` bars and
+emits from bar `period-1`; manifoldbt seeds on the first observation and emits
+from bar 0. Same recursion, different warmup, so the signal differs early and the
+round-trip count with it. Its `sma` matches the reference to 3.3e-13 and its
+`rsi` matches to the last bit, which is why the other three workloads run.
+
+Running it anyway with a different size and a different indicator would produce
+a number, and the number would not mean anything.
+
 ### Why the fee workload sizes in units
 
 With `FractionOfEquity` sizing and a non-zero fee the engines size differently:
@@ -121,21 +170,30 @@ isolates the fee arithmetic, which is the thing both engines must agree on.
 ### The documented divergence, in full
 
 When a bracket fires intrabar and the entry condition still holds at that bar's
-close, manifoldbt books two orders on that bar: the stop or target exit, then a
-fresh entry at the close. vectorbt processes one order per bar and re-enters on
-the next bar instead. Neither is wrong. On controlled bars the bracket fills
-themselves match exactly, which the cross-engine parity suite shipped with the
-library pins test by test; the divergence is purely about *when* a re-entry is
-allowed.
+close, the three engines take three different roads:
 
-The harness counts the affected round-trips rather than hand-waving at them, so
-the report states what share of the trades the difference touches.
+- **manifoldbt** books two orders on that bar: the stop or target exit, then a
+  fresh entry at the close.
+- **vectorbt** processes one order per bar and re-enters on the next bar.
+- **raptorbt** does not re-arm at all. The level still being true is not enough;
+  it waits for the level to go false and true again.
+
+None of them is wrong. On controlled bars the bracket fills themselves match
+exactly, which the cross-engine parity suite shipped with the library pins test
+by test; the divergence is purely about *when* a re-entry is allowed.
+
+The harness counts the affected round-trips rather than hand-waving at them, and
+it is one population, not three: at 10,000 bars manifoldbt books 214 round-trips
+of which 82 re-enter on the exit bar, and raptorbt books exactly 214 - 82 = 132.
+The report states the count and the share, so the size of the difference is
+measured instead of asserted.
 
 ## Alignment choices, and why each one exists
 
-Two engines only produce identical numbers if they are told to do the same
-thing. These are the conventions the harness sets, all of them visible in
-[engine_mbt.py](engine_mbt.py) and [engine_vbt.py](engine_vbt.py):
+Engines only produce identical numbers if they are told to do the same thing.
+These are the conventions the harness sets, all of them visible in
+[engine_mbt.py](engine_mbt.py), [engine_vbt.py](engine_vbt.py) and
+[engine_rbt.py](engine_rbt.py):
 
 - `signal_delay=0` with `execution_price="AtClose"`, matching what
   `Portfolio.from_signals` does by default: a signal fills at the close of the
@@ -157,6 +215,21 @@ thing. These are the conventions the harness sets, all of them visible in
   different fill prices while both being correct, so that class of false
   failures is removed from the data rather than argued about in the report.
 
+On the raptorbt side specifically:
+
+- `upon_bar_close=True`, which fills at the close of the signal bar. Turning it
+  off does not add a one-bar delay, it moves the fill to that same bar's *open*,
+  so there is no setting on that side matching a delayed execution.
+- Sizing is left at its default, which takes the whole equity of the bar before
+  the entry. Since the account is flat at that point, that is the same number as
+  the equity at the fill, and the three engines size identically: `sma_cross`
+  comes back with manifoldbt's final equity to the last bit.
+- The bracket is set on the config, in fractions rather than percent: 0.15 means
+  a 15% stop, so the workload's 0.15% is `0.0015`. Passing the percent number is
+  not an error, it is a stop so wide it never triggers.
+- Indicators come from raptorbt's own Rust `sma` and `rsi`, not from numpy: that
+  is what a user would write, and it is what deserves to be timed.
+
 ## Reading the numbers honestly
 
 - On a shared runner with 4 vCPUs, an engine that parallelises is understated.
@@ -164,14 +237,25 @@ thing. These are the conventions the harness sets, all of them visible in
 - The published wheels are CPU-only, and GitHub-hosted runners have no GPU, so
   nothing here says anything about GPU performance.
 - vectorbt is the open-source package (`pip install vectorbt`), not vectorbtpro.
+- raptorbt has no fan-out API for a parameter grid on one instrument, so its
+  sweep column is a Python loop over `run_single_backtest`. That is not a
+  handicap the harness imposed, it is the only spelling available, and the
+  moving averages are hoisted out of the loop so it gets the same courtesy
+  vectorbt gets on its own grid path.
 
 ## Files
 
 - `data.py` - deterministic OHLCV generator and its content digest
 - `probe_child.py` - the cold-start and memory probes, each in a fresh process
-- `workloads.py` - the parameters both engines read, and the declared parity status
-- `engine_mbt.py` / `engine_vbt.py` - one adapter per engine
+- `workloads.py` - the parameters every engine reads, and the per-engine notes
+- `engines.py` - the registry: who is in the comparison, and who is the reference
+- `engine_mbt.py` / `engine_vbt.py` / `engine_rbt.py` - one adapter per engine
 - `parity.py` - the gate
 - `bench.py` - the runner
+- `sweep_child.py` - one parameter-grid point, in its own process
 - `report.py` - JSON to Markdown, and to the GitHub job summary
-- [`.github/workflows/bench-vs-vectorbt.yml`](../../.github/workflows/bench-vs-vectorbt.yml) - the workflow that runs all of the above on a GitHub-hosted runner
+- `ci/bench-vs-vectorbt.yml` - the workflow, deployed to the public repository
+
+The directory is still named `vs_vectorbt` and the workflow file still
+`bench-vs-vectorbt.yml`: renaming either would break the path the public
+repository runs and start a fresh, empty run history.

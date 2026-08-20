@@ -152,11 +152,12 @@ def diagnose(key: str, df, workdir: str) -> Dict[str, Any]:
     """Untimed measurement of *how much* a documented divergence actually bites.
 
     For the bracket workload this counts the round-trips whose entry lands on the
-    same bar as the previous exit, which is precisely the population where
-    vectorbt takes the next bar instead. Reporting the count turns "the engines
-    differ" into a number a reader can weigh.
+    same bar as the previous exit, which is precisely the population the other
+    engines handle differently: vectorbt takes the next bar, raptorbt does not
+    re-enter at all. Reporting the count turns "the engines differ" into a number
+    a reader can weigh, and it is the same population for both of them.
     """
-    if WORKLOADS[key].parity != "documented":
+    if not any(note.status == "documented" for note in WORKLOADS[key].notes.values()):
         return {}
 
     p = WORKLOADS[key].params

@@ -4,9 +4,10 @@
 # published wheel from PyPI, exactly like any user would. That is what makes the
 # result independent rather than self-reported, and it is why anyone can fork
 # this repository and press "Run workflow" to reproduce the numbers on their own
-# runner.
+# runner. Same for the engines it is compared against: they come from PyPI at
+# pinned versions, and the run prints the versions it resolved.
 
-name: Benchmark vs vectorbt
+name: Benchmark vs vectorbt and raptorbt
 
 on:
   workflow_dispatch:
@@ -18,7 +19,14 @@ on:
       reps:
         description: "Interleaved repetitions per point"
         required: false
-        default: "7"
+        # 2, not 7. The budget went into a longer series instead: at 10M bars
+        # one vectorbt call costs 99 s, so seven of them would put the job past
+        # its timeout on Windows. Two repetitions still bracket the number (min,
+        # median and max are all published, and the median of two is their mean)
+        # but the noise flag gets cruder, since an interquartile range wants at
+        # least four samples to mean anything. A point that looks surprising is
+        # worth re-running at a higher `reps` before it is quoted anywhere.
+        default: "2"
   release:
     types: [published]
   schedule:
@@ -42,13 +50,15 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            bars: "10000 100000 1000000 5000000"
+            bars: "10000 100000 1000000 5000000 10000000"
           - os: windows-latest
-            bars: "10000 100000 1000000 5000000"
+            bars: "10000 100000 1000000 5000000 10000000"
           # macOS runners ship 7 GB of RAM against 16 GB elsewhere, and vectorbt
           # materialises the simulation in memory (roughly 150 MB per million
           # bars, measured). The top size is trimmed so a point is never lost to
-          # swapping, which would time the disk instead of the engine.
+          # swapping, which would time the disk instead of the engine. The same
+          # arithmetic is why 10M bars is added on the other two and not here:
+          # measured, that point adds 1.55 GB on vectorbt's side alone.
           - os: macos-latest
             bars: "10000 100000 1000000"
 
@@ -60,7 +70,15 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          # 3.12, not 3.13, and it is raptorbt that pins it: it is built against
+          # pyo3 0.20.3, whose maximum supported CPython is 3.12. No release up
+          # to 0.9.0 publishes a cp313 wheel and a source build refuses outright
+          # ("the configured Python interpreter version (3.13) is newer than
+          # PyO3's maximum supported version (3.12)"). Comparing engines means
+          # running them in one environment, and the environment has to be one
+          # they all support. Runs before 2026-08-20 used 3.13 with two engines,
+          # so their absolute timings are not directly comparable with these.
+          python-version: "3.12"
 
       - name: Install engines from PyPI
         shell: bash
@@ -81,7 +99,7 @@ jobs:
 
       - name: Record the resolved environment
         shell: bash
-        run: pip freeze | grep -iE '^(manifoldbt|vectorbt|numpy|numba|pandas|psutil)=' || true
+        run: pip freeze | grep -iE '^(manifoldbt|vectorbt|raptorbt|numpy|numba|pandas|psutil)=' || true
 
       - name: Run the benchmark
         shell: bash
