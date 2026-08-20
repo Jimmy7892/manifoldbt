@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict
 
+import data as data_mod
 import manifoldbt as bt
 from manifoldbt.expr import col, lit, when
 from manifoldbt.helpers import Interval, Slippage
@@ -36,7 +37,8 @@ def probe() -> Dict[str, Any]:
     return {"engine": NAME, "version": bt.__version__}
 
 
-def _config(df, *, sizing: str, fee_bps: float) -> "bt.BacktestConfig":
+def _config(df, *, sizing: str, fee_bps: float, slippage_bps: float = 0.0,
+            universe=None) -> "bt.BacktestConfig":
     last_ns = int(df["timestamp"].iloc[-1].value)
     fees = (
         bt.FeeConfig.zero()
@@ -44,7 +46,7 @@ def _config(df, *, sizing: str, fee_bps: float) -> "bt.BacktestConfig":
         else bt.FeeConfig(maker_fee_bps=fee_bps, taker_fee_bps=fee_bps)
     )
     return bt.BacktestConfig(
-        universe=[1],
+        universe=universe or [1],
         time_range_start=0,
         # A day past the last bar: the range is inclusive of everything generated.
         time_range_end=last_ns + 86_400_000_000_000,
@@ -58,7 +60,8 @@ def _config(df, *, sizing: str, fee_bps: float) -> "bt.BacktestConfig":
             position_sizing_mode=sizing,
         ),
         fees=fees,
-        slippage=Slippage.none(),
+        slippage=(Slippage.none() if slippage_bps == 0.0
+                  else Slippage.fixed_bps(slippage_bps)),
         warmup_bars=0,
     )
 
@@ -82,6 +85,18 @@ def _strategy(key: str):
             .size(when(col("fast") > col("slow"), lit(p["alloc"]), lit(0.0)))
             .stop_loss(pct=p["sl_pct"])
             .take_profit(pct=p["tp_pct"])
+        )
+
+    if key in ("sma_cross_costs", "multi_asset"):
+        # The same crossover as the headline workload. What differs is the cost
+        # model and the number of symbols the config points at, neither of which
+        # is visible from the strategy: a universe is walked by the engine, not
+        # spelled out per asset, which is the whole point of the comparison.
+        return (
+            bt.Strategy.create(key)
+            .signal("fast", sma(close_px, p["fast"]))
+            .signal("slow", sma(close_px, p["slow"]))
+            .size(when(col("fast") > col("slow"), lit(p["units"]), lit(0.0)))
         )
 
     if key == "ema_rsi_fees":
@@ -110,16 +125,28 @@ def prepare(key: str, df, workdir: str) -> Callable[[], Dict[str, Any]]:
 
     root = os.path.join(workdir, key)
     os.makedirs(root, exist_ok=True)
-    store = bt.import_dataframe(
-        df,
-        symbol="BENCH",
-        symbol_id=1,
-        interval="1m",
-        data_root=os.path.join(root, "data"),
-        metadata_db=os.path.join(root, "metadata.sqlite"),
-    )
+    data_root = os.path.join(root, "data")
+    metadata_db = os.path.join(root, "metadata.sqlite")
+    assets = int(p.get("assets", 1))
+    if assets > 1:
+        # The universe is derived from the same generator and the same base
+        # seed, so the first symbol is the single-asset series bit for bit and
+        # the whole set is reproducible from the digest already recorded.
+        frames = data_mod.make_universe(len(df), assets)
+        for symbol_id, frame in frames.items():
+            store = bt.import_dataframe(
+                frame, symbol="A%d" % symbol_id, symbol_id=symbol_id,
+                interval="1m", data_root=data_root, metadata_db=metadata_db)
+        universe = list(frames)
+    else:
+        store = bt.import_dataframe(
+            df, symbol="BENCH", symbol_id=1, interval="1m",
+            data_root=data_root, metadata_db=metadata_db)
+        universe = [1]
     strategy = _strategy(key)
-    config = _config(df, sizing=sizing, fee_bps=fee_bps)
+    config = _config(df, sizing=sizing, fee_bps=fee_bps,
+                     slippage_bps=float(p.get("slippage_bps", 0.0)),
+                     universe=universe)
 
     wants_metrics = bool(p.get("metrics"))
 
@@ -171,7 +198,8 @@ def diagnose(key: str, df, workdir: str) -> Dict[str, Any]:
     result = bt.run(
         _strategy(key),
         _config(df, sizing="Units" if "units" in p else "FractionOfEquity",
-                fee_bps=float(p.get("fee_bps", 0.0))),
+                fee_bps=float(p.get("fee_bps", 0.0)),
+                slippage_bps=float(p.get("slippage_bps", 0.0))),
         store,
     )
     trades = result.trades_df()

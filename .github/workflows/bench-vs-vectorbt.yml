@@ -19,14 +19,14 @@ on:
       reps:
         description: "Interleaved repetitions per point"
         required: false
-        # 2, not 7. The budget went into a longer series instead: at 10M bars
-        # one vectorbt call costs 99 s, so seven of them would put the job past
-        # its timeout on Windows. Two repetitions still bracket the number (min,
-        # median and max are all published, and the median of two is their mean)
-        # but the noise flag gets cruder, since an interquartile range wants at
-        # least four samples to mean anything. A point that looks surprising is
-        # worth re-running at a higher `reps` before it is quoted anywhere.
-        default: "2"
+        # 3, not 7. The budget went into a longer series and two more
+        # workloads instead: at 10M bars one vectorbt call costs 99 s, so seven
+        # of them would put the job past its timeout. Three is the floor at
+        # which a median is a median rather than the mean of two, though an
+        # interquartile range still wants four samples to mean anything, so the
+        # noise flag stays coarse. A point that looks surprising is worth
+        # re-running at a higher `reps` before it is quoted anywhere.
+        default: "3"
   release:
     types: [published]
   schedule:

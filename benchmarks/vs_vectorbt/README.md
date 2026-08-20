@@ -86,9 +86,47 @@ store)`, the documented entry point, not through an internal fast path.
 | Workload | What it exercises | vectorbt | raptorbt |
 |---|---|---|---|
 | `sma_cross` | SMA 30/150 crossover, long-only, no cost | exact | exact |
-| `ema_rsi_fees` | EMA 12/26 crossover with an RSI(14) filter and a 5 bps taker fee, capped at 1M bars | exact | unsupported |
 | `sma_cross_metrics` | the same simulation, plus max drawdown, Sharpe, Sortino and volatility | exact | exact |
+| `sma_cross_costs` | the same signal with a 5 bps fee and 2 bps of slippage | exact | unsupported |
+| `multi_asset` | five assets in one shared book, capped at 1M bars | exact | unsupported |
+| `ema_rsi_fees` | EMA 12/26 with an RSI(14) filter and a 5 bps taker fee, capped at 1M bars | exact | unsupported |
 | `bracket_sl_tp` | the same entry with a 15 bps stop and a 30 bps target | documented | documented |
+
+### Costs live in their own workload, and not by preference
+
+A cost model cannot simply be switched on across the board. Measured on the
+headline workload, a fee or a slippage applied to `FractionOfEquity` sizing puts
+the engines 1.3e-4 and 2.1e-5 of capital apart against a 1e-9 tolerance, while
+the round-trip counts stay identical: the trading agrees, the cost arithmetic
+does not, because one charges the fee on top of the notional and the other
+reserves it out of cash first. In fixed units both land exactly, to 1e-15.
+
+So `sma_cross_costs` carries both costs on the same signal as the headline, and
+the price of that is visible: x48.0 against x50.6 at 100k bars, x36.1 against
+x36.7 at 1M. Costs change the result, not the ratio.
+
+### The multi-asset workload is the one manifoldbt does worst on
+
+It is here on purpose. A portfolio is what people actually run, and it is also
+where the two designs differ in kind: manifoldbt walks a universe against one
+shared book, while vectorbt broadcasts a column per asset and has to be told to
+share cash at all.
+
+Broadcasting wins.
+
+| Workload | 100k bars | 1M bars |
+|---|---:|---:|
+| `sma_cross`, one asset | x50.6 | x36.7 |
+| `multi_asset`, five assets | **x10.7** | **x8.8** |
+
+The absolute timings say why: going from one asset to five costs manifoldbt 6.1x
+(26.4 ms to 162.3 ms at 1M bars) and vectorbt 1.4x (989 ms to 1415 ms). Five
+columns in one vectorised pass is close to free for it; five books are not free
+for anything that walks them.
+
+Publishing this lowers the average number on the page. It is the most useful
+workload in the suite for anyone deciding whether to switch, which is the only
+audience the benchmark has.
 
 ### Why the fee workload stops at 1M bars
 

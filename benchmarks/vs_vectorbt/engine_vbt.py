@@ -30,6 +30,8 @@ from typing import Any, Callable, Dict
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
+
+import data as data_mod
 from vectorbt.portfolio.enums import StopExitPrice
 
 from workloads import CAPITAL, FREQ, WORKLOADS
@@ -72,7 +74,8 @@ def indicators(key: str, close: pd.Series) -> Dict[str, pd.Series]:
     """Indicator series for a workload. Used by the timed path and by the
     definition check, so the two can never drift apart."""
     p = WORKLOADS[key].params
-    if key in ("sma_cross", "sma_cross_metrics", "bracket_sl_tp"):
+    if key in ("sma_cross", "sma_cross_metrics", "bracket_sl_tp",
+               "sma_cross_costs", "multi_asset"):
         return {
             "fast": close.rolling(p["fast"]).mean(),
             "slow": close.rolling(p["slow"]).mean(),
@@ -88,7 +91,8 @@ def indicators(key: str, close: pd.Series) -> Dict[str, pd.Series]:
 
 def _level(key: str, ind: Dict[str, pd.Series]) -> pd.Series:
     p = WORKLOADS[key].params
-    if key in ("sma_cross", "sma_cross_metrics", "bracket_sl_tp"):
+    if key in ("sma_cross", "sma_cross_metrics", "bracket_sl_tp",
+               "sma_cross_costs", "multi_asset"):
         return (ind["fast"] > ind["slow"]).fillna(False)
     if key == "ema_rsi_fees":
         return (
@@ -113,9 +117,51 @@ def prepare(key: str, df, workdir: str | None = None) -> Callable[[], Dict[str, 
     else:
         size, size_type = p["alloc"], "percent"
     fees = float(p.get("fee_bps", 0.0)) / 10_000.0
+    slippage = float(p.get("slippage_bps", 0.0)) / 10_000.0
     wants_metrics = bool(p.get("metrics"))
+    assets = int(p.get("assets", 1))
     sl = p["sl_pct"] / 100.0 if "sl_pct" in p else None
     tp = p["tp_pct"] / 100.0 if "tp_pct" in p else None
+
+    if assets > 1:
+        # One book, not five. `from_signals` on a frame of columns builds five
+        # independent portfolios unless it is told otherwise, and five separate
+        # books is a different question from the one manifoldbt answers when it
+        # walks a universe. `group_by` with `cash_sharing` is the spelling that
+        # asks the same thing. With fixed-unit sizing the cash constraint never
+        # binds, which is what lets the two agree at all: on a fraction of
+        # equity they would also have to agree on which asset gets the cash
+        # first, and that is policy rather than arithmetic.
+        frames = data_mod.make_universe(len(df), assets)
+        closes = pd.DataFrame(
+            {"A%d" % sid: f["close"].to_numpy(dtype=np.float64)
+             for sid, f in frames.items()},
+            index=index,
+        )
+
+        def run_multi() -> Dict[str, Any]:
+            fast = closes.rolling(p["fast"]).mean()
+            slow = closes.rolling(p["slow"]).mean()
+            level = (fast > slow).fillna(False)
+            portfolio = vbt.Portfolio.from_signals(
+                closes, entries=level, exits=~level,
+                init_cash=CAPITAL, size=size, size_type=size_type,
+                fees=fees, slippage=slippage, direction="longonly",
+                accumulate=False, freq=FREQ,
+                group_by=True, cash_sharing=True,
+            )
+            total_return = float(portfolio.total_return())
+            trades = portfolio.trades
+            return {
+                "total_return": total_return,
+                "final_equity": CAPITAL * (1.0 + total_return),
+                "round_trips": int(trades.closed.count()),
+                "fills": None,
+                "total_fees": float(trades.records["entry_fees"].sum()
+                                    + trades.records["exit_fees"].sum()),
+            }
+
+        return run_multi
 
     def run() -> Dict[str, Any]:
         level = _level(key, indicators(key, close))
@@ -130,7 +176,7 @@ def prepare(key: str, df, workdir: str | None = None) -> Callable[[], Dict[str, 
             size=size,
             size_type=size_type,
             fees=fees,
-            slippage=0.0,
+            slippage=slippage,
             sl_stop=sl,
             tp_stop=tp,
             stop_exit_price=StopExitPrice.StopMarket,
