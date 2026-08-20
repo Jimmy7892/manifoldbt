@@ -149,10 +149,10 @@ jobs:
           if-no-files-found: warn
 
   # ------------------------------------------------------------------------ #
-  # Parameter grids, which need a licence and therefore a job of their own
+  # Parameter sweeps, which need a licence and therefore a job of their own
   # ------------------------------------------------------------------------ #
   sweeps:
-    name: grids (ubuntu-latest)
+    name: sweeps (ubuntu-latest)
     runs-on: ubuntu-latest
     if: github.event_name != 'release' || github.event.release.prerelease == false
     timeout-minutes: 45
@@ -175,7 +175,7 @@ jobs:
           if [ -n "$VERSION" ]; then pip install "manifoldbt==${VERSION}"; else pip install manifoldbt; fi
           pip install -r benchmarks/vs_vectorbt/requirements-lock.txt
 
-      # A grid benchmark without a licence does not fail, it produces a wrong
+      # A sweep benchmark without a licence does not fail, it produces a wrong
       # number: every unlicensed fan-out call waits a fixed interval before any
       # work starts, so the stopwatch would time the wait. This step exits
       # non-zero rather than let that happen, and the harness refuses again on
@@ -187,16 +187,27 @@ jobs:
         working-directory: benchmarks/vs_vectorbt
         run: python ci_activate.py
 
-      - name: Run the grids
+      - name: Run the sweeps
         shell: bash
         working-directory: benchmarks/vs_vectorbt
-        # Three points, chosen from a measured map of the bars-by-combinations
-        # plane rather than picked: across it the ratio moves between x32 and
-        # x38, so a denser matrix would spend runner time re-measuring the same
-        # number. What the three do carry is the shape of the thing: two grid
-        # sizes at one series length, and one grid vectorbt cannot hold at all.
+        # Three points, sized from what this runner actually did rather than
+        # guessed. Measured here: 87.5 us per combination for manifoldbt at
+        # 20,000 bars, 1.16 ms for vectorbt, 1.34 ms for raptorbt, and 15.0 ms
+        # for raptorbt at 200,000 bars.
+        #
+        # The first point is the only one vectorbt can hold: at 20,000 bars it
+        # materialises 1.57 MB per combination, so 5,000 of them already cost it
+        # 2.5 GB and 20,000 would need 31 GB. The other two are out of its
+        # scope, and they are where a sweep stops being a speed comparison and
+        # becomes a capability one.
+        #
+        # raptorbt sets the budget, not manifoldbt: with no fan-out API its
+        # sweep is a Python loop, so it costs a full backtest per cell. That is
+        # why the large point goes deep in combinations on short series rather
+        # than the reverse -- 20,000 combinations on 20,000 bars costs it 27 s a
+        # call, where 5,000 combinations on a million bars would cost it 25 min.
         run: |
-          python bench.py             --workloads sma_cross             --bars 100000             --reps 1             --cold-start-reps 0             --sweep 20000:2500 20000:5000 200000:2500:oos             --sweep-reps "${{ inputs.reps || '2' }}"             --out "results-sweeps.json"
+          python bench.py             --workloads sma_cross             --bars 100000             --reps 1             --cold-start-reps 0             --sweep 20000:5000 20000:20000:oos 200000:10000:oos             --sweep-reps "${{ inputs.reps || '2' }}"             --out "results-sweeps.json"
 
       - name: Render the report
         if: always()
