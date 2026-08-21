@@ -672,76 +672,153 @@ def _walk_forward_bars(wf_result, folds, *, is_color, oos_color, title, figsize,
 def _walk_forward_stitched(wf_result, folds, *, full_result=None, is_color, oos_color, title, figsize, show, save):
     """Stitched OOS equity vs full backtest.
 
-    - Orange: OOS segments from each fold, chained end-to-end.
-      This is the TRUE out-of-sample performance of the WFO strategy.
-    - Blue: full backtest with default params over the same period (no WFO).
-
-    If orange ~ blue: no overfitting, WFO adds little.
-    If blue >> orange: full backtest is overfitted.
-    If orange >> blue: WFO optimization adds real value.
+    - Orange: OOS segments from each fold. When the test windows tile the
+      calendar end to end (anchored, pardo), segments are chained into ONE
+      curve: each one is rescaled to start at the previous segment's final
+      value, which is exactly return composition -- the account of someone
+      trading each fold's re-optimized winner in sequence. That chained curve
+      is the true out-of-sample performance of the WFO *policy*.
+    - When the test windows overlap (custom, step < length) or leave gaps
+      between them (blocked), two calendars cannot be traded at once and no
+      single account curve exists. Segments are then drawn separately, on
+      their own dates, and never chained: a single curve here would be a lie.
+    - Blue: full backtest with default params, restricted to the dates the
+      OOS windows actually cover. Comparing against the full period would
+      overlay months of compounding the OOS curve never had.
     """
     with theme_context():
         fig = new_figure(figsize)
 
-        # 1. Stitch OOS segments: chain so each starts where previous ended
-        stitched = []
-        current_val = None
-        fold_boundaries = []
-        for fold in folds:
-            oos_eq = fold.get("oos_equity", [])
-            if not oos_eq:
-                continue
-            oos = np.array(oos_eq, dtype=float)
-            if current_val is None:
-                stitched.extend(oos.tolist())
-                current_val = oos[-1]
-            else:
-                scale = current_val / oos[0] if oos[0] != 0 else 1.0
-                scaled = oos * scale
-                stitched.extend(scaled.tolist())
-                current_val = scaled[-1]
-            fold_boundaries.append(len(stitched))
+        # Segment geometry decides everything: chain only when the test
+        # windows tile the calendar without overlap or gap. The ranges come
+        # from one derivation in Rust, so exact equality is the right test.
+        ranges = [f.get("test_range") or {} for f in folds]
+        starts = [r.get("start") for r in ranges]
+        ends = [r.get("end") for r in ranges]
+        contiguous = (
+            all(v is not None for v in starts + ends)
+            and all(starts[i + 1] == ends[i] for i in range(len(folds) - 1))
+            and not wf_result.get("folds_overlap", False)
+        )
 
-        if not stitched:
+        def _seg(fold):
+            eq = np.asarray(fold.get("oos_equity", []), dtype=float)
+            ts = np.asarray(fold.get("oos_timestamps", []), dtype="int64")
+            if len(ts) == len(eq) and len(ts) > 0:
+                return eq, ts.view("datetime64[ns]")
+            return eq, None
+
+        segments = [_seg(f) for f in folds]
+        segments = [(eq, d) for eq, d in segments if len(eq) > 0]
+        if not segments:
             fig.update_layout(title_text="No OOS equity data available")
             return finalize(fig, show=show, save=save)
+        has_dates = all(d is not None for _, d in segments)
 
-        stitched = np.array(stitched)
-        x = np.arange(len(stitched))
+        if contiguous:
+            # Chain: rescaling each segment to the previous final value IS
+            # return composition, valid because the windows are consecutive.
+            morceaux_eq, morceaux_dates = [], []
+            current_val = None
+            for eq, d in segments:
+                if current_val is None:
+                    scaled = eq
+                else:
+                    scaled = eq * (current_val / eq[0]) if eq[0] != 0 else eq
+                morceaux_eq.append(scaled)
+                if has_dates:
+                    morceaux_dates.append(d)
+                current_val = scaled[-1]
 
-        # 2. Full backtest equity (if provided)
-        if full_result is not None:
-            full_eq = np.array(full_result.equity_curve)
-            if len(full_eq) > 0:
-                indices = np.linspace(0, len(full_eq) - 1, len(stitched), dtype=int)
-                full_resampled = full_eq[indices].astype(float)
-                if full_resampled[0] != 0:
-                    full_resampled = full_resampled * (stitched[0] / full_resampled[0])
+            stitched = np.concatenate(morceaux_eq)
+            # Rester en numpy : `datetime64[ns].tolist()` rend des ENTIERS
+            # nanosecondes, pas des dates, et l'axe redeviendrait numerique.
+            x = (np.concatenate(morceaux_dates) if has_dates
+                 else np.arange(len(stitched)))
+            fins = np.cumsum([len(e) for e in morceaux_eq]) - 1
+            boundaries = [x[i] for i in fins]
+
+            _overlay_full_backtest(fig, full_result, x, stitched,
+                                   has_dates=has_dates, color=is_color)
+            fig.add_trace(go.Scatter(
+                x=x, y=stitched, mode="lines",
+                name="Walk-forward (stitched OOS)",
+                line=dict(color=oos_color, width=1.0), opacity=0.85,
+            ))
+            for b in boundaries[:-1]:
+                fig.add_vline(x=b, line_color=DARK_GRAY, line_width=0.5,
+                              line_dash="dash", opacity=0.3)
+            titre = title or "Walk-Forward: Stitched OOS vs Full Backtest"
+        else:
+            # Overlapping or gapped test windows: no single tradable account
+            # exists, draw each fold on its own dates instead of pretending.
+            raison = ("overlapping test windows"
+                      if wf_result.get("folds_overlap", False)
+                      else "gaps between test windows")
+            for i, (eq, d) in enumerate(segments):
+                x = d if d is not None else np.arange(len(eq))
                 fig.add_trace(go.Scatter(
-                    x=x, y=full_resampled, mode="lines",
-                    name="Full backtest (default params)",
-                    line=dict(color=is_color, width=0.8), opacity=0.4,
+                    x=x, y=eq, mode="lines",
+                    name=f"Fold {i + 1} OOS",
+                    line=dict(width=1.0), opacity=0.8,
                 ))
-
-        # 3. Plot stitched OOS on top
-        fig.add_trace(go.Scatter(
-            x=x, y=stitched, mode="lines",
-            name="Walk-forward (stitched OOS)",
-            line=dict(color=oos_color, width=1.0), opacity=0.85,
-        ))
-
-        # Fold boundaries
-        for b in fold_boundaries[:-1]:
-            fig.add_vline(x=b, line_color=DARK_GRAY, line_width=0.5,
-                          line_dash="dash", opacity=0.3)
+            fig.add_annotation(
+                x=0.5, y=1.06, xref="paper", yref="paper", showarrow=False,
+                text=f"segments not chained: {raison}",
+                font=dict(size=10, color=DARK_GRAY),
+            )
+            titre = title or "Walk-Forward: OOS Segments (not tradable as one curve)"
 
         fig.update_layout(
-            title_text=title or "Walk-Forward: Stitched OOS vs Full Backtest",
+            title_text=titre,
             legend=dict(x=0.01, y=0.99),
         )
-        fig.update_xaxes(title_text="Bars")
+        fig.update_xaxes(title_text="Date" if has_dates else "Bars")
         fig.update_yaxes(title_text="Equity")
         return finalize(fig, show=show, save=save)
+
+
+def _overlay_full_backtest(fig, full_result, x, stitched, *, has_dates, color):
+    """Full-backtest baseline, restricted to the dates the OOS curve covers.
+
+    The previous version resampled the FULL period onto the OOS length with
+    ``np.linspace``: it overlaid a year of compounding on a few months of
+    out-of-sample and the baseline crushed the OOS curve for purely
+    mechanical reasons. Date alignment is the only honest comparison, so
+    without dates on both sides nothing is drawn.
+    """
+    if full_result is None:
+        return
+    if not has_dates:
+        import warnings
+        warnings.warn(
+            "walk_forward stitched: full_result ignored (the walk-forward "
+            "result carries no oos_timestamps; re-run it to get dated folds)",
+            stacklevel=3)
+        return
+    try:
+        full_dates, full_eq = equity_with_dates(full_result)
+    except Exception:
+        import warnings
+        warnings.warn(
+            "walk_forward stitched: full_result ignored (no positions table "
+            "to date its equity curve)", stacklevel=3)
+        return
+    if len(full_eq) == 0:
+        return
+    mask = (full_dates >= x[0]) & (full_dates <= x[-1])
+    if not mask.any():
+        return
+    fen_dates, fen_eq = full_dates[mask], full_eq[mask].astype(float)
+    # Meme point de depart que la courbe OOS : on compare des trajectoires,
+    # pas des niveaux absolus.
+    if fen_eq[0] != 0:
+        fen_eq = fen_eq * (stitched[0] / fen_eq[0])
+    fig.add_trace(go.Scatter(
+        x=fen_dates, y=fen_eq, mode="lines",
+        name="Full backtest (default params, same window)",
+        line=dict(color=color, width=0.8), opacity=0.4,
+    ))
 
 
 # ── Parameter Stability ─────────────────────────────────────────────────────

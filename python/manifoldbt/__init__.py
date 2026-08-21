@@ -5,6 +5,12 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import importlib as _importlib
 
+# Avant TOUT chargement du module natif: la roue GPU charge NVRTC par son nom
+# et ne le trouverait pas dans site-packages/nvidia/. Sans effet cote CPU.
+from manifoldbt import _cuda_libs as _cuda_libs
+
+_cuda_libs.rendre_visible()
+
 from manifoldbt._native import (
     BacktestResult,
     BatchResultLite,
@@ -189,6 +195,14 @@ def _require_pro_over_combos(n_combos: int, what: str) -> None:
     )
 
 
+#: Distances de bracket balayables par leur nom, en plus des ``param()``
+#: d'expression. Elles ne passent pas par ``param()`` parce qu'une distance de
+#: bracket est un champ de configuration, pas un noeud d'expression : rien ne
+#: l'evalue. Doit rester aligne sur ``ORDER_SWEEP_PARAMS`` (bt-core,
+#: orchestrator.rs), qui fait la substitution par combinaison.
+_ORDER_SWEEP_PARAMS = frozenset({"stop_loss", "take_profit", "trailing_stop"})
+
+
 def _validate_swept_params(strategy: "Strategy", names, what: str) -> None:
     """Reject swept parameter names the strategy never declares.
 
@@ -203,10 +217,10 @@ def _validate_swept_params(strategy: "Strategy", names, what: str) -> None:
     merges both into ``parameters`` (and is memoised, so this costs nothing).
     """
     declared = set(strategy.to_json_dict().get("parameters") or {})
-    unknown = [n for n in names if n not in declared]
+    unknown = [n for n in names if n not in declared and n not in _ORDER_SWEEP_PARAMS]
     if not unknown:
         return
-    known = ", ".join(sorted(declared)) if declared else "none"
+    known = ", ".join(sorted(declared | _ORDER_SWEEP_PARAMS))
     raise StrategyError(
         f"{what}: parameter(s) {unknown} are not declared by strategy "
         f"'{strategy.name}' (declared: {known}). Sweeping them would run the "
@@ -1173,17 +1187,42 @@ def run_walk_forward(
     Args:
         strategy: Strategy definition.
         wf_config: Walk-forward config dict with keys:
-            method (str): "Anchored" or "Rolling"
-            n_splits (int): Number of folds.
-            train_ratio (float): Fraction for training (0, 1).
+            geometry (str): "anchored" (default), "blocked", "pardo" or
+                "custom".
+                - "anchored"/"blocked" take ``n_splits`` + ``train_ratio``.
+                - "pardo"/"custom" take ``train``/``test`` window specs; the
+                  fold count is DERIVED from the window lengths, never chosen.
+            n_splits (int): Number of folds (anchored/blocked only).
+            train_ratio (float): Training fraction in (0, 1) (anchored/blocked).
+            train (dict): pardo: ``{"length": Interval.days(365)}`` (fixed
+                sliding window W). custom: ``{"mode": "anchored", "min_length":
+                ...}`` or ``{"mode": "rolling", "length": ...}``. Every
+                duration also accepts a ``*_bars`` twin (signal bars).
+            test (dict): ``{"length": Interval.days(90), "step":
+                Interval.days(30)}``. ``step`` defaults to ``length`` (tests
+                tile end to end, the only shape whose OOS segments chain into
+                one tradable curve); ``step < length`` = overlapping windows,
+                flagged by ``folds_overlap``; ``step > length`` is refused.
             optimize_metric (str): e.g. "sharpe", "sortino".
             param_grid (dict): Parameter grid for optimization.
             max_parallelism (int): Max threads.
+            device (str): "auto" (default), "cpu" or "cuda".
         config: Backtest configuration.
         store: Data store.
 
     Returns:
-        Dict with ``folds`` and ``best_params_per_fold``.
+        Dict with ``folds``, ``best_params_per_fold``, ``n_folds``,
+        ``folds_overlap``, ``effective_folds`` (independent folds: overlapping
+        windows count for less) and ``walk_forward_efficiency`` (Pardo's WFE,
+        mean of per-fold ``oos.cagr / is.cagr``).
+
+    Each fold's OOS run is WARMED UP: it simulates from the fold's train start
+    with trading suppressed until the test window, so indicators are hot at
+    the boundary instead of restarting empty.
+
+    Note: the legacy ``method="Rolling"`` was renamed ``geometry="blocked"``
+    (independent blocks separated by gaps, not Pardo's rolling); for Pardo's
+    walk-forward use ``geometry="pardo"``.
     """
     # Pro gate (friendly message + clean exit). Real enforcement lives natively
     # in `py_run_walk_forward` (check_feature("walk_forward")), so this cannot be
@@ -1511,7 +1550,11 @@ def register_exo(
 
     if provider:
         # Unified layout: {root}/{provider}/{timeframe}/{name}.arrow
-        target_dir = root / provider / timeframe
+        # Minuscules obligatoires: les deux ecrivains Rust (ingest.rs) et les
+        # deux lecteurs creent ce dossier en minuscules. Ecrire "BINANCE" ici
+        # produisait un second dossier, invisible aux lecteurs sur un systeme
+        # de fichiers sensible a la casse.
+        target_dir = root / provider.lower() / timeframe
     else:
         # Legacy layout: {root}/exo/{name}.arrow
         target_dir = root / "exo"

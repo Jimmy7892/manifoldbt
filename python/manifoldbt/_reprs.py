@@ -81,10 +81,17 @@ class WalkForwardResult(dict):
 
         is_v = [_m(f, "is_metrics") for f in folds]
         oos_v = [_m(f, "oos_metrics") for f in folds]
-        lines = [
-            f"<WalkForwardResult: {len(folds)} folds | metric {metric!r} | "
-            f"IS {_span(is_v)} | OOS {_span(oos_v)}"
-        ]
+        entete = (f"<WalkForwardResult: {len(folds)} folds | metric {metric!r} | "
+                  f"IS {_span(is_v)} | OOS {_span(oos_v)}")
+        # Recouvrement : n plis recouvrants n'apportent pas n verdicts. Le
+        # nombre effectif est la seule lecture honnete, on l'affiche d'office.
+        eff = self.get("effective_folds")
+        if self.get("folds_overlap") and eff:
+            entete += f" | {eff:g} effective (overlapping tests)"
+        wfe = self.get("walk_forward_efficiency")
+        if wfe is not None:
+            entete += f" | WFE {wfe:.2f}"
+        lines = [entete]
         for f in folds:
             best = f.get("best_params") or {}
             flat = {k: (list(v.values())[0] if isinstance(v, dict) else v)

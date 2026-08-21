@@ -26,10 +26,10 @@ sequential fill simulation with realistic fees, slippage, funding and look-ahead
 
 ## Why ManifoldBT
 
-- **Fast** — 500K bars in ~13 ms. 353x faster than vectorbt, ~3,500x faster than backtrader.
-- **Expressive** — fluent DSL with 30+ indicators, conditional logic, cross-asset references
-- **Rigorous** — Monte Carlo, walk-forward, parameter sweeps, lookahead detection, exposure diagnostics
-- **Portable** — `pip install`, no Rust toolchain needed. Works on Python 3.9+.
+- **Fast**: 10M bars in 317 ms. 78x faster than vectorbt, 308x once you also want drawdown and Sharpe, ~3,500x faster than backtrader. [Measured in public CI](#performance), every run linked.
+- **Expressive**: fluent DSL with 30+ indicators, conditional logic, cross-asset references
+- **Rigorous**: Monte Carlo, walk-forward, parameter sweeps, lookahead detection, exposure diagnostics
+- **Portable**: `pip install`, no Rust toolchain needed. Works on Python 3.9+.
 
 ## Installation
 
@@ -37,11 +37,18 @@ sequential fill simulation with realistic fees, slippage, funding and look-ahead
 pip install manifoldbt              # engine only: backtests, sweeps, metrics
 pip install manifoldbt[plot]        # + interactive charts and native windows (show=True)
 pip install manifoldbt[all]         # everything: plots, windows, PNG export, pandas/polars
+pip install manifoldbt[gpu]         # + NVIDIA runtime compiler, for device="cuda" (Pro)
 ```
 
 The base install stays light (no browser, no GUI) for scripts, servers and CI.
 `[plot]` adds plotly and a native window backend; `[all]` also pulls kaleido for
 static PNG/SVG export (which bundles a headless Chromium).
+
+The Linux and Windows x86_64 wheels already carry the CUDA kernels, so `[gpu]`
+only adds the NVIDIA runtime compiler (~180 MB) that compiles them on your
+machine. Skip it if you already have a CUDA toolkit installed. An NVIDIA driver
+is required, and GPU acceleration is a Pro feature; everything else runs at full
+speed on the CPU.
 
 ## Quick Start
 
@@ -83,17 +90,17 @@ print(result.summary())
 
 ## Loading data
 
-Bring your own data, or pull it from a built-in connector — both return a
+Bring your own data, or pull it from a built-in connector. Both return a
 `DataStore` ready for `mbt.run(...)`.
 
-**CSV** — free on all tiers, auto-detects standard / MetaTrader 4 / MetaTrader 5:
+**CSV**, free on all tiers, auto-detects standard / MetaTrader 4 / MetaTrader 5:
 
 ```python
 store = mbt.import_csv("EURUSD_1m.csv", symbol="EURUSD", symbol_id=1,
                        interval="1m", asset_class="forex")
 ```
 
-**Exchange connectors** — Binance, Bybit, Hyperliquid, dYdX, Bitstamp (free); Databento, Massive (Pro):
+**Exchange connectors**: Binance, Bybit, Hyperliquid, dYdX, Bitstamp (free); Databento, Massive (Pro):
 
 ```python
 store = mbt.ingest(provider="binance", symbol="BTCUSDT", symbol_id=1,
@@ -133,17 +140,59 @@ manifoldbt ingest --provider binance --symbol BTCUSDT --symbol-id 1 --start ... 
 
 ## Performance
 
-EMA(12/26) + RSI(14) on 500K synthetic 1-min bars (manifoldbt/vectorbt: median of 5 runs; backtrader: median of 3):
+Every number below comes from a benchmark that runs in public CI on a standard
+GitHub runner, and links back to the run that produced it. It installs each
+engine from PyPI the way a user would, generates its own data, checks that the
+engines produced the **same result**, and only then reports how long each took:
+a workload they disagree on gets no published timing at all.
 
-| Engine | Time | vs ManifoldBT |
-|--------|------|---------------|
-| **ManifoldBT** (Rust) | **13 ms** | 1x |
-| vectorbt (NumPy) | 4,662 ms | 353x slower |
-| backtrader (Python) | 46,944 ms | ~3,556x slower |
+**Latest run: [#11](https://github.com/manifoldbt/manifoldbt/actions/runs/32396472073)**
+ran on Linux x86_64, 4 vCPU, Python 3.12, manifoldbt 0.17.3 / vectorbt 0.28.4 /
+raptorbt 0.9.0, 3 interleaved repetitions.
 
-ManifoldBT and vectorbt produce identical results (−30.23% vs −30.24% return, same trade count); backtrader's event-driven fills give a different PnL.
+| Workload | Bars | ManifoldBT | vectorbt | raptorbt |
+|---|---:|---:|---:|---:|
+| SMA crossover | 10M | **317 ms** | 24.75 s (x78) | 878 ms (x2.8) |
+| ...with drawdown, Sharpe, Sortino, volatility | 10M | **317 ms** | 97.46 s (**x308**) | 894 ms (x2.8) |
+| ...with a 5 bps fee and 2 bps slippage | 10M | **316 ms** | 24.53 s (x78) | not supported |
+| EMA + RSI filter, 5 bps fee | 1M | **52 ms** | 2.21 s (x41) | not supported |
+| Five assets in one book | 1M | **140 ms** | 2.34 s (x17) | not supported |
 
-Reproduce: `python benchmarks/bench_vs_competitors.py --rows 500000 --runs 5`
+The second row is the one worth reading twice. Asking for a performance summary
+costs ManifoldBT nothing measurable, because it computes one during the run
+whether you read it or not, and costs vectorbt 73 seconds, because it defers the
+equity curve until a risk metric needs it and then has to build one.
+
+The fifth row is the one where ManifoldBT does worst, and it is published for
+that reason: broadcasting a column per asset is close to free for vectorbt,
+while walking five books is not free for anything.
+
+### Parameter sweeps
+
+| Bars | Combinations | ManifoldBT | vectorbt | raptorbt |
+|---:|---:|---:|---:|---:|
+| 20,000 | 5,000 | **446 ms**, 40 MB | 5.84 s, 2.5 GB | 7.08 s |
+| 200,000 | 10,000 | **9.96 s**, 79 MB | out of memory | 164.50 s |
+
+Past a certain grid the question stops being speed. vectorbt materialises the
+simulation per combination, 1.57 MB of it at 20,000 bars, so the second row
+would ask a machine for tens of gigabytes. ManifoldBT runs it in ten seconds
+inside 79 MB.
+
+Reproduce any of it yourself: fork the repository and press **Run workflow** on
+[the benchmark](https://github.com/manifoldbt/manifoldbt/actions/workflows/bench-vs-vectorbt.yml),
+or run it locally from
+[`benchmarks/vs_vectorbt/`](https://github.com/manifoldbt/manifoldbt/tree/master/benchmarks/vs_vectorbt).
+The method, the parity gate and the known divergences are written up in
+[its README](https://github.com/manifoldbt/manifoldbt/blob/master/benchmarks/vs_vectorbt/README.md).
+
+### Against an event-driven engine
+
+backtrader runs the same EMA(12/26) + RSI(14) strategy on 500K 1-minute bars in
+**46,944 ms**, against **13 ms** for ManifoldBT: a factor of **3,556**. Measured
+with `benchmarks/bench_vs_competitors.py`, median of 3 runs. It sits outside the
+CI suite because its event-driven fills produce a different PnL, and the parity
+gate publishes no timing for engines that did not do the same work.
 
 ### How it compares
 

@@ -56,7 +56,7 @@ def test_sweep_rejects_undeclared_param():
 
 def test_walk_forward_rejects_undeclared_param():
     wf = {
-        "method": "Rolling", "n_splits": 2, "train_ratio": 0.7,
+        "geometry": "blocked", "n_splits": 2, "train_ratio": 0.7,
         "optimize_metric": "sharpe", "param_grid": {"fast": [10, 20]},
     }
     with pytest.raises((StrategyError, bt.LicenseError)) as exc:
