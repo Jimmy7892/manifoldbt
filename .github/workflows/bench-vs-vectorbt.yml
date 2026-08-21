@@ -110,8 +110,35 @@ jobs:
             VERSION="$(echo '${{ github.event.release.tag_name }}' | sed 's/^v//')"
           fi
           python -m pip install --upgrade pip
+          # PyPI accepte le televersement bien avant que son index le serve.
+          # Mesure sur la publication de 0.18.0: le televersement s'est termine
+          # a 01:48:18 et ce job a demande la version a 01:48:50, trente-deux
+          # secondes plus tard, pour se faire repondre "from versions: ...,
+          # 0.17.3". Ce n'est PAS un hasard de timing: ce workflow est declenche
+          # par `release: published`, et cette release est creee juste apres le
+          # televersement. La course est donc GARANTIE a chaque publication, et
+          # elle n'avait jamais pu se voir puisque ce chemin n'avait jamais
+          # tourne sur une vraie release.
+          #
+          # On attend donc que l'index serve la version, au lieu d'echouer sur
+          # une propagation. `--no-cache-dir` parce que pip met en cache la
+          # reponse de l'index, y compris celle qui ne connait pas encore la
+          # version. Dix minutes de patience au maximum, contre soixante de
+          # budget pour le job.
           if [ -n "$VERSION" ]; then
-            pip install "manifoldbt==${VERSION}"
+            installe=0
+            for essai in $(seq 1 20); do
+              if pip install --no-cache-dir "manifoldbt==${VERSION}"; then
+                installe=1
+                break
+              fi
+              echo "tentative ${essai}/20: ${VERSION} pas encore sur l'index, nouvelle tentative dans 30 s"
+              sleep 30
+            done
+            if [ "$installe" -ne 1 ]; then
+              echo "::error::manifoldbt==${VERSION} toujours introuvable sur PyPI apres dix minutes"
+              exit 1
+            fi
           else
             pip install manifoldbt
           fi
@@ -181,7 +208,38 @@ jobs:
             VERSION="$(echo '${{ github.event.release.tag_name }}' | sed 's/^v//')"
           fi
           python -m pip install --upgrade pip
-          if [ -n "$VERSION" ]; then pip install "manifoldbt==${VERSION}"; else pip install manifoldbt; fi
+          # PyPI accepte le televersement bien avant que son index le serve.
+          # Mesure sur la publication de 0.18.0: le televersement s'est termine
+          # a 01:48:18 et ce job a demande la version a 01:48:50, trente-deux
+          # secondes plus tard, pour se faire repondre "from versions: ...,
+          # 0.17.3". Ce n'est PAS un hasard de timing: ce workflow est declenche
+          # par `release: published`, et cette release est creee juste apres le
+          # televersement. La course est donc GARANTIE a chaque publication, et
+          # elle n'avait jamais pu se voir puisque ce chemin n'avait jamais
+          # tourne sur une vraie release.
+          #
+          # On attend donc que l'index serve la version, au lieu d'echouer sur
+          # une propagation. `--no-cache-dir` parce que pip met en cache la
+          # reponse de l'index, y compris celle qui ne connait pas encore la
+          # version. Dix minutes de patience au maximum, contre soixante de
+          # budget pour le job.
+          if [ -n "$VERSION" ]; then
+            installe=0
+            for essai in $(seq 1 20); do
+              if pip install --no-cache-dir "manifoldbt==${VERSION}"; then
+                installe=1
+                break
+              fi
+              echo "tentative ${essai}/20: ${VERSION} pas encore sur l'index, nouvelle tentative dans 30 s"
+              sleep 30
+            done
+            if [ "$installe" -ne 1 ]; then
+              echo "::error::manifoldbt==${VERSION} toujours introuvable sur PyPI apres dix minutes"
+              exit 1
+            fi
+          else
+            pip install manifoldbt
+          fi
           pip install -r benchmarks/vs_vectorbt/requirements-lock.txt
 
       # A sweep benchmark without a licence does not fail, it produces a wrong
