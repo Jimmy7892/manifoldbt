@@ -182,6 +182,17 @@ class Expr:
         if v == "IfElse":
             return {v: [args[0].to_json(), args[1].to_json(), args[2].to_json()]}
 
+        if v == "Choice":
+            # Choice(String, Vec<(String, Expr)>) -- serde attend une liste de
+            # paires, pas un dict : l'ORDRE des branches est porteur (la
+            # premiere sert de defaut a la compilation initiale).
+            return {"Choice": [args[0], [[k, e.to_json()] for k, e in args[1]]]}
+
+        if v == "OnTimeframe":
+            # OnTimeframe(String, Box<Expr>) -- l'expression est evaluee sur la
+            # grille de la timeframe nommee puis etalee en escalier.
+            return {"OnTimeframe": [args[0], args[1].to_json()]}
+
         if v == "Column":
             return {"Column": args[0]}
         if v == "Literal":
@@ -518,6 +529,56 @@ def when(condition: Expr, true_value: Any = 1.0, false_value: Any = float("nan")
     return Expr("IfElse", condition, _coerce(true_value), _coerce(false_value))
 
 
+def choice(name: str, branches: "dict[str, Expr]", *, description: str = "") -> Expr:
+    """Balayer un CHOIX d'expression, pas seulement un nombre.
+
+    Un ``param()`` ordinaire porte une valeur numerique. ``choice()`` porte un
+    NOM, et chaque nom designe une sous-expression differente. Le moteur
+    remplace le noeud entier par la branche choisie AVANT de simuler, donc une
+    combinaison n'evalue que sa propre branche : les autres n'existent plus.
+
+    C'est ce qui le distingue d'un ``when()`` imbrique, qui construit toutes
+    les variantes et tranche barre par barre.
+
+    Usage (balayer la timeframe d'une bande, sim en 1m)::
+
+        bande = mbt.choice("band", {
+            "30m": sma(mbt.tf("30m").close, mbt.param("len")),
+            "1h":  sma(mbt.tf("1h").close,  mbt.param("len")),
+            "2h":  sma(mbt.tf("2h").close,  mbt.param("len")),
+        })
+        # grille : {"len": [10, 20, 30], "band": ["30m", "1h", "2h"]}
+
+    Les branches acceptent n'importe quelle expression, donc le meme mecanisme
+    balaie une colonne exogene, un actif ou un type d'indicateur.
+
+    Args:
+        name: nom du parametre selecteur, a mettre dans la grille.
+        branches: nom de branche -> expression. L'ordre compte : la premiere
+            sert de defaut quand le parametre est absent.
+        description: metadonnee libre.
+
+    Raises:
+        ValueError: si ``branches`` est vide.
+    """
+    if not branches:
+        raise ValueError(
+            f"choice({name!r}) needs at least one branch; an empty choice has "
+            f"nothing to resolve to."
+        )
+    items = [(str(k), _coerce(v)) for k, v in branches.items()]
+    expr = Expr("Choice", name, items)
+    # Declare le selecteur comme un parametre a part entiere, sans quoi le
+    # balayer serait refuse par la validation ("parameter not declared").
+    expr._param_meta = {
+        "name": name,
+        "default": items[0][0],
+        "range": None,
+        "description": description,
+    }
+    return expr
+
+
 def exo(name: str, column: Optional[str] = None) -> Expr:
     """Reference an exogenous data column.
 
@@ -625,6 +686,28 @@ class TimeframeRef:
     def col(self, name: str) -> Expr:
         """Reference any column from this timeframe."""
         return col(f"{self._tf}.{name}")
+
+    def apply(self, expr: "Expr") -> Expr:
+        """Evaluate *expr* ON this timeframe's own grid, then step-hold the
+        result back onto the simulation grid (forward-filled, no lookahead:
+        a completed bar's value becomes readable from the next bar on).
+
+        This is what makes higher-timeframe INDICATORS correct. Periods
+        inside *expr* count in THIS timeframe's bars::
+
+            h1 = bt.tf("1h")
+            band = h1.apply(sma(close, mbt.param("len")))   # len = HOURS
+
+        is a true SMA of ``len`` hourly closes, sweepable like any param.
+        By contrast ``sma(h1.close, 20)`` counts 20 SIMULATION bars over a
+        step-held hourly series -- on a 1m simulation that is a 20-MINUTE
+        smoothing of a staircase, not a 20-hour average.
+
+        Inside *expr*, ``close``/``open``/... refer to this timeframe's own
+        resampled columns. Requires ``extra_timeframes`` to declare the
+        timeframe. Nesting ``apply`` inside another ``apply`` is rejected.
+        """
+        return Expr("OnTimeframe", self._tf, _coerce(expr))
 
     def __repr__(self) -> str:
         return f"TimeframeRef({self._tf!r})"

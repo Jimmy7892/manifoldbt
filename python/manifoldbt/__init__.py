@@ -54,7 +54,7 @@ from manifoldbt.exceptions import (
     LicenseError,
     StrategyError,
 )
-from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, col, exo, hold, lit, param, s, scan, symbol_ref, tf, when
+from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, choice, col, exo, hold, lit, param, s, scan, symbol_ref, tf, when
 from manifoldbt.helpers import (
     ExecutionPrice,
     FillModel,
@@ -1642,6 +1642,7 @@ __all__ = [
     "s",
     "scan",
     "symbol_ref",
+    "choice",
     "tf",
     "when",
     # Strategy & config
