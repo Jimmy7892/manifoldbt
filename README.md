@@ -8,13 +8,14 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/bvU6Wjc72d"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the ManifoldBT Discord" height="34"></a>
+</p>
+
+<p align="center">
   <a href="https://pypi.org/project/manifoldbt/"><img src="https://img.shields.io/pypi/v/manifoldbt?logo=pypi&logoColor=white&color=2f6fed" alt="PyPI"></a>
-  <a href="https://pypi.org/project/manifoldbt/"><img src="https://img.shields.io/pypi/pyversions/manifoldbt?logo=python&logoColor=white" alt="Python versions"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/core-Rust-dea584?logo=rust&logoColor=white" alt="Rust core">
-  <img src="https://img.shields.io/badge/GPU-CUDA%20(Pro)-76b900?logo=nvidia&logoColor=white" alt="CUDA">
   <a href="https://github.com/manifoldbt/manifoldbt/actions/workflows/bench-vs-vectorbt.yml"><img src="https://img.shields.io/badge/benchmarks-public%20CI-2ea44f?logo=githubactions&logoColor=white" alt="Benchmarks in public CI"></a>
-  <a href="https://github.com/manifoldbt/manifoldbt/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-Commons%20Clause-lightgrey" alt="License"></a>
-  <a href="https://discord.gg/bvU6Wjc72d"><img src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
