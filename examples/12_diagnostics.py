@@ -5,6 +5,8 @@ Demonstrates:
   - check_exposure_stability(): verify positions are consistent across time windows
   - risk_check(): post-run risk metrics validation
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/12_diagnostics.py
 """

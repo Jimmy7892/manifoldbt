@@ -5,6 +5,8 @@ Demonstrates:
   - run_sweep() for Cartesian grid search
   - Heatmap visualization with mbt.plot.heatmap_2d()
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/08_sweep_2d_heatmap.py
 """

@@ -5,6 +5,8 @@ Demonstrates:
   - param() for sweep-able parameters
   - Walk-forward fold results inspection
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/07_walk_forward.py
 """

@@ -1,4 +1,4 @@
-"""Example 15: Cross-Exchange — Signal Binance, Execution dYdX.
+"""Cross-exchange — signals on Binance, execution on dYdX.
 
 Simple RSI mean-reversion:
 - RSI computed on Binance BTC perp data
@@ -7,8 +7,18 @@ Simple RSI mean-reversion:
 - Per-venue fees: each symbol is charged its own exchange's fee schedule
   (see FeeConfig.multi_venue below)
 
+Demonstrates:
+  - signals computed on one venue, orders filled on another
+  - a dict universe spanning two providers, with no special config
+  - per-venue fees: each symbol charged its own exchange's schedule
+
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Prerequisite:
     Binance perp data (bars_1m/201.arrow) + dYdX data (dydx/1h/BTC-USD.arrow)
+
+Usage:
+    python examples/15_cross_exchange.py
 """
 
 import time

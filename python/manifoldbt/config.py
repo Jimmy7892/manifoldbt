@@ -375,6 +375,32 @@ class BacktestConfig:
     """Explicit mapping from signal symbol to execution symbol.
     Required when signal and execution have different tickers.
     Example: ``{"BTC-USDT:perp": "BTC-USD:perp"}``"""
+    option_underlyings: Dict[int, int] = field(default_factory=dict)
+    """Maps an option symbol id to the symbol whose price settles it.
+
+    Required for every option in the universe. Deribit settles against its own
+    index, whose ticker matches no series you can ingest, so the substitute is
+    yours to name (``BTC-PERPETUAL`` in practice). The engine refuses to run an
+    option without one rather than settle it against its own last traded
+    premium, which on an illiquid strike is days stale.
+    Example: ``{2: 1}`` to settle option id 2 against symbol id 1."""
+    option_margin_model: str = "none"
+    """Margin formula short option positions pay: ``"none"`` or ``"deribit"``.
+
+    ``"none"`` charges nothing, which is only honest when the strategy never
+    sells an option. ``"deribit"`` applies the venue's published per-contract
+    formula, refuses a short that does not fit initial margin, and force-closes
+    the book when maintenance margin passes equity."""
+    option_contracts: Dict = field(default_factory=dict)
+    """Contract terms per option symbol id. Filled automatically from the data
+    store at run time; set it by hand only to override what was ingested.
+
+    Positions on an option are counted in **units of the underlying**, not in
+    exchange contracts. On Deribit the two are the same thing (contract size 1).
+    On a listed equity option, one contract is 100 units: to hold one SPY
+    contract quoted at 4.70, target 100, which costs the 470 a contract costs
+    and settles for what a contract settles for. ``contract_size`` in the terms
+    is what converts a position back into contracts."""
     # Deprecated — kept for backward compat
     provider: Optional[str] = None
     exo_sources: Dict = field(default_factory=dict)
@@ -417,6 +443,12 @@ class BacktestConfig:
             d["signal_source"] = self.signal_source
         if self.execution_source:
             d["execution_source"] = self.execution_source
+        if self.option_contracts:
+            d["option_contracts"] = {
+                str(sid): spec for sid, spec in self.option_contracts.items()
+            }
+        if self.option_margin_model and self.option_margin_model != "none":
+            d["option_margin_model"] = self.option_margin_model
         # Deprecated fields (backward compat)
         if self.provider:
             d["provider"] = self.provider

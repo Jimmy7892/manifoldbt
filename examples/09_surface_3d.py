@@ -5,6 +5,8 @@ Demonstrates:
   - run_sweep_lite() for fast parameter grid search
   - 3D surface visualization with mbt.plot.surface_3d()
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/09_surface_3d.py
 """

@@ -1,109 +1,115 @@
-"""Créer ses propres indicateurs (indicateurs absents de la base).
+"""Writing your own indicators — the ones the library does not ship.
 
+Demonstrates:
+  - an indicator as a plain function returning an `Expr`
+  - `scan` for stateful indicators no rolling window can express
+  - `param(...)` to make a custom indicator sweepable
+
+Data: shared store — real market data from `data/` (see examples/README.md)
+
+Usage:
     python examples/19_custom_indicators.py
 
 ────────────────────────────────────────────────────────────────────────────
-LE MODÈLE MENTAL
+THE MENTAL MODEL
 ────────────────────────────────────────────────────────────────────────────
-Un indicateur, ici, n'est RIEN d'autre qu'une fonction Python qui renvoie un
-`Expr`. Un `Expr` est un *nœud dans un graphe de calcul* : quand vous écrivez
-`(high + low) / 2`, aucune donnée n'est touchée — vous décrivez une opération.
-Le graphe complet est ensuite compilé et évalué **en Rust**, en une passe,
-vectorisé. C'est pour ça que vos indicateurs maison tournent à la vitesse des
-indicateurs natifs : ils finissent dans le même moteur.
+An indicator here is NOTHING but a Python function returning an `Expr`. An
+`Expr` is a *node in a computation graph*: writing `(high + low) / 2` touches
+no data — it describes an operation. The whole graph is then compiled and
+evaluated **in Rust**, in one vectorised pass. That is why your own indicators
+run at the speed of the built-in ones: they end up in the same engine.
 
-Toute la lib `manifoldbt.indicators` est écrite comme ça (`sma` ==
-`source.rolling_mean(period)`). Donc « ajouter un indicateur » = « écrire une
-fonction qui compose des `Expr` ». Trois niveaux, du plus simple au plus rare.
+The whole `manifoldbt.indicators` library is written this way (`sma` ==
+`source.rolling_mean(period)`). So "adding an indicator" means "writing a
+function that composes `Expr`s". Three levels, from the common to the rare.
 """
 
 import os
 from time import perf_counter
 
 import manifoldbt as mbt
-# Colonnes de base (ce sont déjà des Expr) + quelques helpers.
+# Base columns (already Exprs) plus a few helpers.
 from manifoldbt.indicators import open, high, low, close, volume, sma, rsi, ema
-# Briques bas niveau : lit (constante), col (colonne par nom), when (if/else),
-# scan/s (état récursif), param (paramètre balayable).
+# Low-level bricks: lit (constant), col (column by name), when (if/else),
+# scan/s (recursive state), param (sweepable parameter).
 from manifoldbt.expr import lit, col, when, scan, s, param
 from manifoldbt.helpers import time_range, Slippage, Interval
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NIVEAU 1 — COMPOSER LES PRIMITIVES  (99 % des cas)
+# LEVEL 1 — COMPOSING PRIMITIVES  (99% of cases)
 # ═══════════════════════════════════════════════════════════════════════════
-# On combine colonnes + opérateurs (+ - * /, > < >= & | ~) + méthodes d'Expr
+# Combine columns + operators (+ - * /, > < >= & | ~) + Expr methods
 # (rolling_mean/std/min/max/median, ewm_mean, zscore, pct_change, diff, lag,
-#  rsi, linreg_*, cross_above/below, cumsum, rank, ...). Chaque appel renvoie
-# un Expr, donc tout se chaîne.
+#  rsi, linreg_*, cross_above/below, cumsum, rank, ...). Every call returns
+# an Expr, so everything chains.
 
 def awesome_oscillator(fast=5, slow=34):
-    """Awesome Oscillator (Bill Williams) — ABSENT de la base.
+    """Awesome Oscillator (Bill Williams) — NOT in the library.
 
-        AO = SMA(prix médian, 5) − SMA(prix médian, 34),  prix médian = (H+L)/2
+        AO = SMA(median price, 5) − SMA(median price, 34),  median = (H+L)/2
 
-    Momentum : positif = pression acheteuse, négatif = vendeuse.
+    Momentum: positive means buying pressure, negative means selling.
     """
-    median_price = (high + low) / 2          # Expr : opération sur 2 colonnes
-    return sma(median_price, fast) - sma(median_price, slow)   # Expr résultat
+    median_price = (high + low) / 2          # Expr: an operation on 2 columns
+    return sma(median_price, fast) - sma(median_price, slow)   # the result Expr
 
 
 def dist_to_ma_pct(period=20):
-    """Écart en % du prix à sa moyenne mobile — ABSENT de la base.
+    """Distance from price to its moving average, in % — NOT in the library.
 
-    Négatif = le prix est SOUS sa moyenne (survendu) → brique idéale pour du
-    retour à la moyenne. Une seule ligne de composition.
+    Negative means the price sits BELOW its average (oversold), which makes it
+    a natural building block for mean reversion. One line of composition.
     """
     ma = sma(close, period)
     return (close - ma) / ma * 100.0
 
 
 def intraday_range_pct():
-    """Amplitude de la bougie en % du close — ABSENT de la base.
+    """Bar range as a % of the close — NOT in the library.
 
-    Un proxy de volatilité instantané. Montre qu'on mélange librement les
-    colonnes OHLC.
+    An instant volatility proxy. Shows that OHLC columns mix freely.
     """
     return (high - low) / close * 100.0
 
 
 def rsi_zscore(period=14, lookback=365):
-    """RSI standardisé : à quel point le RSI est extrême vs SA PROPRE histoire.
+    """Standardised RSI: how extreme the RSI is against ITS OWN history.
 
-    Compose un indicateur natif (rsi) avec des stats roulantes. C'est
-    exactement le motif utilisé dans strategies/rsi_dynamic_alloc.py.
+    Composes a built-in indicator (rsi) with rolling statistics — the same
+    pattern used in strategies/rsi_dynamic_alloc.py.
     """
     r = rsi(close, period)
     return (r - r.rolling_mean(lookback)) / r.rolling_std(lookback)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NIVEAU 2 — `scan` : INDICATEURS À ÉTAT / RÉCURSIFS
+# LEVEL 2 — `scan`: STATEFUL / RECURSIVE INDICATORS
 # ═══════════════════════════════════════════════════════════════════════════
-# Quand la valeur d'aujourd'hui dépend de celle d'HIER (récursion) et qu'aucun
-# rolling ne suffit, on utilise `scan`. Il tourne comme une petite VM scalaire,
-# entièrement en Rust (pas de callback Python par barre).
+# When today's value depends on YESTERDAY's (recursion) and no rolling window
+# suffices, reach for `scan`. It runs as a small scalar VM, entirely in Rust
+# (no Python callback per bar).
 #
 #   scan(state=..., update=..., output=...)
-#     • state  : variables d'état + leur valeur initiale (1re ligne)
-#     • update : expressions évaluées à chaque barre, DANS L'ORDRE
-#                - s.prev("x") = valeur de "x" à la barre précédente
-#                - s.var("k")  = valeur calculée plus tôt DANS LE MÊME pas
-#                - si un nom d'update == un nom d'état, on réécrit cet état
-#     • output : quelle variable émettre comme résultat
+#     • state  : state variables and their initial value (first row)
+#     • update : expressions evaluated on every bar, IN ORDER
+#                - s.prev("x") = value of "x" on the previous bar
+#                - s.var("k")  = value computed earlier WITHIN THE SAME step
+#                - an update name matching a state name rewrites that state
+#     • output : which variable to emit as the result
 #
-# Preuve que c'est puissant : le Kalman et le GARCH livrés sont écrits
-# UNIQUEMENT avec scan (voir manifoldbt/indicators.py).
+# Proof that it is enough: the shipped Kalman and GARCH are written with scan
+# ALONE (see manifoldbt/indicators.py).
 
 def up_streak():
-    """Nombre de bougies HAUSSIÈRES consécutives — ABSENT de la base, et
-    impossible avec un simple rolling (il faut un compteur qui se réinitialise).
+    """Count of consecutive UP bars — NOT in the library, and impossible with
+    a plain rolling window (it needs a counter that resets).
 
-        streak = streak_précédent + 1  si close > close(-1),  sinon 0
+        streak = previous streak + 1  if close > close(-1),  else 0
     """
-    is_up = close > close.lag(1)             # Expr booléen (1.0 / 0.0) par barre
+    is_up = close > close.lag(1)             # boolean Expr (1.0 / 0.0) per bar
     return scan(
-        state={"n": lit(0.0)},               # compteur initialisé à 0
+        state={"n": lit(0.0)},               # counter seeded at 0
         update={
             # if is_up: prev(n) + 1  else: 0
             "n": when(is_up, s.prev("n") + lit(1.0), lit(0.0)),
@@ -113,66 +119,66 @@ def up_streak():
 
 
 def ema_from_scratch(alpha=0.1):
-    """EMA « à la main » via scan — juste pour illustrer le mécanisme.
-    (L'EMA existe en natif : `ema(close, span)`. Ici c'est pédagogique.)
+    """A hand-rolled EMA via scan — purely to show the mechanism.
+    (EMA is built in: `ema(close, span)`. This one is pedagogical.)
 
-        ema = alpha * close + (1 - alpha) * ema_précédent
+        ema = alpha * close + (1 - alpha) * previous ema
     """
     return scan(
-        state={"ema": close},                # graine = 1er close
+        state={"ema": close},                # seeded with the first close
         update={"ema": lit(alpha) * close + lit(1.0 - alpha) * s.prev("ema")},
         output="ema",
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NIVEAU 3 — LES LIMITES (À CONNAÎTRE)
+# LEVEL 3 — THE LIMITS (WORTH KNOWING)
 # ═══════════════════════════════════════════════════════════════════════════
-# • PAS de callback Python par barre : `scan` s'exécute en Rust, on ne peut pas
-#   y injecter une fonction Python appelée sur chaque bougie (ce serait lent).
-#   Tant que la logique s'exprime avec Expr + when + scan, ça passe.
-# • Un indicateur VRAIMENT nouveau, non exprimable ainsi, demande d'ajouter un
-#   variant `Expr` + son kernel côté Rust — chemin contributeur, pas utilisateur.
-# • Données externes (hashrate, funding, sentiment…) : `mbt.register_exo(...)`
-#   puis `exo("nom")` renvoie un Expr utilisable comme n'importe quelle colonne.
+# • NO Python callback per bar: `scan` runs in Rust, and you cannot inject a
+#   Python function called on every candle (it would be slow). As long as the
+#   logic expresses in Expr + when + scan, it works.
+# • A GENUINELY new indicator, not expressible that way, needs a new `Expr`
+#   variant and its Rust kernel — the contributor path, not the user path.
+# • External data (hashrate, funding, sentiment…): `mbt.register_exo(...)`,
+#   then `exo("name")` returns an Expr usable like any other column.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BONUS — RENDRE SON INDICATEUR BALAYABLE (sweep)
+# BONUS — MAKING YOUR INDICATOR SWEEPABLE
 # ═══════════════════════════════════════════════════════════════════════════
-# Les périodes acceptent `param(...)` à la place d'un entier. Le moteur
-# recompile alors une fois par combinaison et balaie la grille en parallèle,
-# sans changer une ligne de l'indicateur :
+# Periods accept `param(...)` in place of an integer. The engine then
+# recompiles once per combination and sweeps the grid in parallel, without
+# changing a line of the indicator:
 #
 #   ao = awesome_oscillator(fast=param("fast"), slow=param("slow"))
-#   # puis, avec la grille passée séparément (l'indicateur ne change pas) :
+#   # then, with the grid passed separately (the indicator is unchanged):
 #   #   batch = mbt.run_sweep_lite(
 #   #       strategy,
 #   #       {"fast": [3, 5, 8], "slow": [21, 34, 55]},
 #   #       config, store,
 #   #   )
 #
-# (voir examples/08_sweep_2d_heatmap.py pour le sweep complet.)
+# (see examples/08_sweep_2d_heatmap.py for the full sweep.)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# METTRE UN INDICATEUR MAISON DANS UNE STRATÉGIE + BACKTEST
+# PUTTING A CUSTOM INDICATOR IN A STRATEGY AND BACKTESTING IT
 # ═══════════════════════════════════════════════════════════════════════════
-# On utilise `dist_to_ma_pct` (retour à la moyenne) : long quand le prix est
-# nettement sous sa moyenne, on sort quand il l'a rejointe.
+# Using `dist_to_ma_pct` (mean reversion): long when the price sits well below
+# its average, out when it has caught up.
 
-dist = dist_to_ma_pct(period=48)             # notre indicateur maison
-streak = up_streak()                         # et un second, pour l'exposer aussi
+dist = dist_to_ma_pct(period=48)             # our custom indicator
+streak = up_streak()                         # a second one, exposed too
 
-signal = when(dist < -5.0, 1.0,              # >5 % sous la MM → achat du creux
-         when(dist > 0.0, 0.0))              # revenu à la MM → sortie, sinon hold
+signal = when(dist < -5.0, 1.0,              # >5% below the MA -> buy the dip
+         when(dist > 0.0, 0.0))              # back at the MA -> exit, else hold
 
 strategy = (
     mbt.Strategy.create("custom_indicator_demo")
-    .signal("dist_to_ma_%", dist)            # .signal() = exposer pour le rapport
+    .signal("dist_to_ma_%", dist)            # .signal() exposes it in the report
     .signal("up_streak", streak)
     .size(signal)
-    .describe("Retour à la moyenne piloté par un indicateur maison (écart à la MM)")
+    .describe("Mean reversion driven by a custom indicator (distance to the MA)")
 )
 
 # -- Config -------------------------------------------------------------------
@@ -185,9 +191,9 @@ config = mbt.BacktestConfig(
     bar_interval=Interval.hours(1),
     initial_capital=10_000,
     execution=mbt.ExecutionConfig(allow_short=False, max_position_pct=1.0),
-    fees=mbt.FeeConfig.zero(),               # sans frais, pour l'exemple
+    fees=mbt.FeeConfig.zero(),               # fee-free, for the example
     slippage=Slippage.fixed_bps(2),
-    warmup_bars=60,                          # >= la plus longue fenêtre utilisée
+    warmup_bars=60,                          # >= the longest window used
 )
 
 # -- Run ----------------------------------------------------------------------

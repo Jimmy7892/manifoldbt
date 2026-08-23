@@ -5,6 +5,8 @@ Demonstrates:
   - Momentum via smoothed ROC on 12h bars
   - Volatility-adjusted sizing
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/03_multi_asset_momentum.py
 """

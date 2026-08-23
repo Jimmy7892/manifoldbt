@@ -1,5 +1,10 @@
 """Strategy template — copy this file and modify.
 
+Demonstrates:
+  - the minimal shape of a backtest: strategy, config, store, run
+
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/00_template.py
 """

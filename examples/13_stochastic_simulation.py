@@ -7,6 +7,9 @@ Demonstrates:
   - CUDA GPU acceleration (device="cuda")
   - All expressions compile to native Rust — full Rayon / CUDA parallelism
 
+Data: none — this file simulates price paths, it does not backtest on any
+series. The paths are its output, not its input.
+
 Usage:
     python examples/13_stochastic_simulation.py
 """

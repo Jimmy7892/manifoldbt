@@ -25,6 +25,10 @@ from manifoldbt.plot._convert import (
     positions_arrays,
     trades_arrays,
     _ts_to_int64,
+    date_tickformat,
+    percent_tickformat,
+    money_hovertemplate,
+    run_currency,
 )
 from manifoldbt.plot._decimate import maybe_decimate
 from manifoldbt.plot._utils import finalize, format_pct, new_figure
@@ -277,10 +281,10 @@ def equity(
         dates, values = maybe_decimate(dates, values)
         fig.add_traces(_area_traces(
             dates, values, float(values.min()), color, width=1.5,
-            hovertemplate="%{x|%d %b %Y}   $%{y:,.0f}<extra></extra>",
+            hovertemplate=money_hovertemplate(values, run_currency(result)),
         ))
         fig.update_yaxes(title_text="Equity")
-        fig.update_xaxes(tickformat="%b %Y")
+        fig.update_xaxes(tickformat=date_tickformat(dates))
         return finalize(fig, show=show, save=save)
 
 
@@ -324,7 +328,7 @@ def benchmark_equity(
             line=dict(color=benchmark_color, width=1.0),
         ))
         fig.update_yaxes(title_text="Normalized" if normalize else "Equity")
-        fig.update_xaxes(tickformat="%b %Y")
+        fig.update_xaxes(tickformat=date_tickformat(d1))
         fig.update_layout(legend=dict(x=0.01, y=0.99))
         return finalize(fig, show=show, save=save)
 
@@ -357,9 +361,10 @@ def drawdown(
             hovertemplate="%{x|%d %b %Y}   %{y:.1%}<extra></extra>",
         ))
         dd_min = float(dd.min()) if len(dd) else -0.01
-        fig.update_yaxes(title_text="Drawdown", tickformat=".0%",
+        fig.update_yaxes(title_text="Drawdown",
+                         tickformat=percent_tickformat(dd_min),
                          range=[dd_min * 1.08, 0])
-        fig.update_xaxes(tickformat="%b %Y")
+        fig.update_xaxes(tickformat=date_tickformat(dates))
         return finalize(fig, show=show, save=save)
 
 

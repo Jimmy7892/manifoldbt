@@ -54,7 +54,7 @@ from manifoldbt.exceptions import (
     LicenseError,
     StrategyError,
 )
-from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, col, exo, hold, lit, param, s, scan, symbol_ref, tf, when
+from manifoldbt.expr import AssetRef, Expr, TimeframeRef, asset, choice, col, exo, hold, lit, param, s, scan, symbol_ref, tf, when
 from manifoldbt.helpers import (
     ExecutionPrice,
     FillModel,
@@ -452,7 +452,76 @@ def _prepare_config(config: BacktestConfig, strategy, store: DataStore) -> Backt
     # so the engine applies them per-strategy. This lets one batch/sweep call run
     # strategies carrying different brackets over a single data load. A bracket
     # set directly on config.execution.orders still applies as the fallback.
+
+    _attach_option_contracts(cfg, store)
     return cfg
+
+
+def _attach_option_contracts(cfg: BacktestConfig, store: DataStore) -> None:
+    """Fill ``cfg.option_contracts`` from what the store recorded at ingest.
+
+    The terms come from the venue, so nothing here is guessed. The one thing the
+    caller must supply is ``option_underlyings``: Deribit settles against its own
+    index, whose ticker matches no series anyone can ingest, so which price
+    stands in for it is a decision, not a lookup. Getting it wrong silently would
+    settle every contract against the wrong number, so a missing entry raises.
+    """
+    if cfg.option_contracts:
+        return  # explicitly overridden by the caller
+    try:
+        available = store.option_contracts()
+    except AttributeError:
+        return  # store predates option support (mock stores in tests)
+
+    universe = cfg.universe if isinstance(cfg.universe, list) else []
+    in_universe = {int(sid) for sid in universe if isinstance(sid, int)}
+    underlyings = {int(k): int(v) for k, v in (cfg.option_underlyings or {}).items()}
+
+    # An option whose terms were never recorded is the dangerous case: it
+    # prices, it trades, it never expires, and nothing looks wrong. Catch it
+    # before the engine sees a plain price series.
+    try:
+        classes = store.asset_classes()
+    except AttributeError:
+        classes = {}
+    untermed = [
+        int(sid)
+        for sid, klass in classes.items()
+        if klass == "EquityOption"
+        and int(sid) in in_universe
+        and int(sid) not in {int(k) for k in available}
+    ]
+    if untermed:
+        names = {int(i): t for i, t in store.list_symbols()}
+        listed = ", ".join(f"{sid} ({names.get(sid, '?')})" for sid in sorted(untermed))
+        raise ValueError(
+            f"symbol(s) {listed} are recorded as options but carry no contract terms. "
+            "The connector that ingested them does not report a strike and an expiration, "
+            "so the engine would hold them forever at their last quoted premium instead of "
+            "settling them. Re-ingest from a connector that reports contract terms "
+            "(deribit, databento), or set config.option_contracts by hand."
+        )
+
+    missing = []
+    contracts = {}
+    for sid, terms in available.items():
+        sid = int(sid)
+        if sid not in in_universe:
+            continue
+        if sid not in underlyings:
+            missing.append(sid)
+            continue
+        contracts[sid] = dict(terms, underlying_id=underlyings[sid])
+
+    if missing:
+        names = {int(i): t for i, t in store.list_symbols()}
+        listed = ", ".join(f"{sid} ({names.get(sid, '?')})" for sid in sorted(missing))
+        raise ValueError(
+            f"option symbol(s) {listed} have contract terms but no settlement "
+            "underlying. Set config.option_underlyings = {option_id: underlying_id}; "
+            "an option cannot be settled against its own last traded premium."
+        )
+    cfg.option_contracts = contracts
 
 
 def _is_sub_daily(res: Any) -> bool:
@@ -612,7 +681,8 @@ def ingest(
     """Ingest bars from a data provider into the Arrow IPC store.
 
     Providers (free): ``"binance"``, ``"bybit"``, ``"hyperliquid"``, ``"dydx"``,
-    ``"bitstamp"``. Pro: ``"databento"``, ``"massive"``.
+    ``"bitstamp"``, ``"deribit"``, ``"yahoo"`` (alias ``"yfinance"``).
+    Pro: ``"databento"``, ``"massive"``.
 
     Returns a :class:`DataStore` ready for :func:`run`.
 
@@ -634,6 +704,50 @@ def ingest(
             start="2020-06-01T00:00:00Z",
             end="2026-03-01T00:00:00Z",
         )
+
+    Example (stocks, ETFs, indices, FX and futures via Yahoo Finance)::
+
+        store = bt.ingest(
+            provider="yahoo",
+            symbol="AAPL",
+            symbol_id=1,
+            start="2015-01-01T00:00:00Z",
+            end="2026-01-01T00:00:00Z",
+            interval="1d",
+            asset_class="equity",
+        )
+
+    Yahoo caps its own history: 1m goes back 30 days, 1h about 2 years, daily
+    to the listing date. Prices are dividend-adjusted like ``yfinance``'s
+    ``auto_adjust=True``; pass ``dataset="raw"`` for unadjusted quotes.
+
+    Example (a Deribit option, including one that has already expired)::
+
+        store = bt.ingest(
+            provider="deribit",
+            symbol="BTC-27JUN25-100000-C",
+            symbol_id=2,
+            start="2025-05-01T00:00:00Z",
+            end="2025-07-01T00:00:00Z",
+            interval="1d",
+            asset_class="option",
+        )
+
+    Deribit is the only free connector here that serves expired contracts, which
+    is what an option backtest needs. The strike, expiration, side and settlement
+    style are read from the venue and stored beside the bars, so the engine can
+    settle the contract instead of holding it forever. Prices are quoted in the
+    base currency, so such a backtest is denominated in BTC, ``initial_capital``
+    included. Set ``config.option_underlyings`` to say which series settles it.
+
+    ``databento`` and ``massive`` (both Pro) report the same terms for US listed
+    options: Databento from the ``definition`` schema of a dataset such as
+    ``OPRA.PILLAR``, Massive from ``/v3/reference/options/contracts`` on an OSI
+    ticker like ``"O:SPY251219C00650000"``. Two things differ from Deribit.
+    Positions are counted in units of the underlying, so one 100-multiplier
+    contract is a position of 100. And US listed equity options are physically
+    settled, which the engine models as cash at intrinsic: exact for an index
+    option, an approximation for a single-stock one.
     """
     _PRO_PROVIDERS = {"databento", "massive"}
     if provider in _PRO_PROVIDERS:
@@ -1642,6 +1756,7 @@ __all__ = [
     "s",
     "scan",
     "symbol_ref",
+    "choice",
     "tf",
     "when",
     # Strategy & config

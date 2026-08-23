@@ -18,7 +18,14 @@ def main() -> None:
 
     # ── ingest ────────────────────────────────────────────────────────────
     ing = sub.add_parser("ingest", help="Ingest bars from a data provider")
-    ing.add_argument("--provider", required=True, help="binance | bybit | hyperliquid | databento")
+    ing.add_argument(
+        "--provider",
+        required=True,
+        help=(
+            "binance | bybit | hyperliquid | dydx | bitstamp | deribit | yahoo "
+            "| databento | massive"
+        ),
+    )
     ing.add_argument("--symbol", required=True, help="e.g. BTCUSDT, ESH5")
     ing.add_argument("--symbol-id", required=True, type=int, help="Unique integer ID for this symbol")
     ing.add_argument("--start", required=True, help="RFC3339 start (e.g. 2025-01-01T00:00:00Z)")

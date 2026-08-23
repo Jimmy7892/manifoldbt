@@ -111,10 +111,23 @@ def detect_lookahead(
     Data is loaded once and sliced for each sub-test (no redundant I/O).
 
     Two sub-tests:
-      * **extension** — split at 2/3 of the period. Catches *global*
-        look-ahead (e.g. ``np.mean(all_prices)`` instead of rolling).
+      * **extension** — split at 2/3 of the period. Catches look-ahead that
+        depends on how much data the run was given.
       * **truncation** — split at 1/3 of the period. Catches *rolling*
         look-ahead (e.g. signal at bar T using bar T+1).
+
+    .. warning::
+       **What this cannot see.** Both sub-tests re-run the *same strategy* on
+       a shorter window. A parameter computed from the data *before* the
+       backtest — ``threshold = df.close.mean()`` in a notebook, then passed in
+       as a number — is unchanged by re-running, so the trades match and the
+       verdict is PASS. The leak already happened, outside the engine.
+
+       This is a property of every re-run-based method, not a gap to be closed
+       here: no such test can audit a constant. The defence is to treat any
+       parameter derived from data as part of the pipeline and re-derive it on
+       the window under test. ``examples/25_lookahead_trap.py`` demonstrates
+       the blind spot and the technique that does catch it.
 
     Args:
         strategy: Strategy definition.

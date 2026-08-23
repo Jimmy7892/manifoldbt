@@ -101,3 +101,77 @@ def trades_arrays(result) -> dict:
         else:
             out[name] = arrow_to_numpy(col)
     return out
+
+
+def run_currency(result) -> str:
+    """Currency the run is denominated in, from its manifest.
+
+    The manifest embeds the full BacktestConfig, so nothing is guessed. "USD"
+    is only the last resort for a result that has no manifest at all (mock
+    objects in tests).
+    """
+    try:
+        code = result.manifest["config"]["currency"]
+        return str(code) if code else "USD"
+    except Exception:
+        return "USD"
+
+
+_CURRENCY_PREFIX = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def money_hovertemplate(values: np.ndarray, currency: str) -> str:
+    """Hover template for a money series, currency- and magnitude-aware.
+
+    The old template was a hardcoded "$%{y:,.0f}": a 10-BTC equity hovered as
+    "$10" - wrong currency, and a precision that erased every variation the
+    chart existed to show. Decimals follow the magnitude of the series, and
+    the currency is written as a symbol when it has one, as a suffix code
+    (10.0443 BTC) when it does not.
+    """
+    peak = float(np.nanmax(np.abs(values))) if len(values) else 0.0
+    decimals = 0 if peak >= 10_000 else 2 if peak >= 100 else 4
+    code = (currency or "USD").upper()
+    amount = "%{y:,." + str(decimals) + "f}"
+    prefix = _CURRENCY_PREFIX.get(code)
+    amount = prefix + amount if prefix else amount + " " + code
+    return "%{x|%d %b %Y}   " + amount + "<extra></extra>"
+
+
+def date_tickformat(dates: np.ndarray) -> str:
+    """Date-axis tick format adapted to the span of the series.
+
+    Hardcoding "%b %Y" labelled every tick of a two-month backtest "May 2025"
+    (and every tick of a 30-day synthetic run "Jan 2024"): the format must
+    follow the span, not assume it. Thresholds are where the coarser format
+    stops producing distinct labels for ~6 ticks.
+    """
+    if len(dates) < 2:
+        return "%b %Y"
+    span_days = float(
+        (np.datetime64(dates[-1], "ns") - np.datetime64(dates[0], "ns"))
+        / np.timedelta64(1, "D")
+    )
+    if span_days <= 3:
+        return "%d %b %H:%M"
+    if span_days <= 180:
+        return "%d %b"
+    # Beyond ~6 months the historical "%b %Y" is already distinct per tick,
+    # whatever the span: plotly widens the tick spacing with the range. Only
+    # the short end was ever broken.
+    return "%b %Y"
+
+
+def percent_tickformat(magnitude: float) -> str:
+    """Percent-axis tick format adapted to the magnitude of the series.
+
+    The date-axis disease, on the value axis: ".0%" labelled every tick of a
+    -0.9% max-drawdown chart "0%". Decimals follow the extreme value, so the
+    ticks always spell out distinct numbers.
+    """
+    m = abs(float(magnitude))
+    if m >= 0.05:
+        return ".0%"
+    if m >= 0.005:
+        return ".1%"
+    return ".2%"

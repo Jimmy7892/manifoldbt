@@ -5,6 +5,8 @@ Demonstrates:
   - Kalman filter for spread equilibrium
   - Z-score mean-reversion sizing
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/05_stat_arb.py
 """

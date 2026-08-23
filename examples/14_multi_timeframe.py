@@ -10,6 +10,8 @@ Logic:
   - 1h entry:  RSI(14) < 35 during bullish regime → buy the dip
   - Size: 50% of initial capital when conditions met, else flat
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/14_multi_timeframe.py
 """
@@ -23,9 +25,12 @@ from manifoldbt.helpers import time_range, Slippage, Interval
 h12 = mbt.tf("12h")  # references columns like "12h.close"
 
 # -- Indicators ---------------------------------------------------------------
-# Trend filter on 12-hour bars (forward-filled onto 1h grid)
-trend_fast = ema(h12.close, 20)
-trend_slow = ema(h12.close, 50)
+# Trend filter on 12-hour bars. `apply()` evaluates the EMA on the 12h grid, so
+# 20 and 50 count 12-HOUR candles. Written `ema(h12.close, 20)` they would count
+# 20 rows of the 1h simulation grid over a step-held column -- under two 12h
+# candles, not twenty. See `bt.tf`.
+trend_fast = h12.apply(ema(close, 20))
+trend_slow = h12.apply(ema(close, 50))
 bullish = trend_fast > trend_slow
 
 # Entry signal on 1-hour bars (native resolution)
@@ -59,7 +64,7 @@ config = mbt.BacktestConfig(
     ),
     fees=mbt.FeeConfig.binance_perps(),
     slippage=Slippage.fixed_bps(2),
-    warmup_bars=50,
+    warmup_bars=50 * 12,  # 50 twelve-hour candles, counted in 1h simulation bars
     extra_timeframes={
         "12h": Interval.hours(12),
     },

@@ -5,6 +5,8 @@ Demonstrates:
   - Long and short positions
   - Continuous sizing (signal * 0.25)
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/02_mean_reversion.py
 """

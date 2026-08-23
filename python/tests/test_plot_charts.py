@@ -94,3 +94,58 @@ def test_returns_histogram_has_no_unnamed_legend_entry(monkeypatch):
     assert not any(
         (name or "").startswith("trace ") for name in legend_names
     ), f"auto-generated trace label in the legend: {legend_names}"
+
+
+# ── Adaptive axis / hover formats ────────────────────────────────────────────
+# These formats used to be hardcoded, and the failures were invisible in any
+# assertion on figure structure: a two-month backtest labelled every date tick
+# "May 2025", a -0.9% drawdown labelled every value tick "0%", and a 10-BTC
+# equity hovered as "$10". Pure functions now decide them, so the contract is
+# testable without rendering.
+
+
+def _dates(days):
+    np = pytest.importorskip("numpy")
+    return np.arange("2025-01-01", np.timedelta64(days, "D") + np.datetime64("2025-01-01"),
+                     dtype="datetime64[D]").astype("datetime64[ns]")
+
+
+def test_date_tickformat_follows_the_span():
+    from manifoldbt.plot._convert import date_tickformat
+
+    assert date_tickformat(_dates(2)) == "%d %b %H:%M"
+    assert date_tickformat(_dates(61)) == "%d %b", "a two-month window must show days"
+    assert date_tickformat(_dates(365 * 4)) == "%b %Y", "long spans keep the historical format"
+
+
+def test_money_hovertemplate_is_currency_and_magnitude_aware():
+    np = pytest.importorskip("numpy")
+    from manifoldbt.plot._convert import money_hovertemplate
+
+    btc = money_hovertemplate(np.array([10.0, 10.04]), "BTC")
+    assert "BTC" in btc and "%{y:,.4f}" in btc, btc
+    assert "$" not in btc, "a BTC equity must not hover in dollars"
+
+    usd = money_hovertemplate(np.array([10_000.0, 21_313.0]), "USD")
+    assert "$%{y:,.0f}" in usd, usd
+
+    eur = money_hovertemplate(np.array([500.0]), "EUR")
+    assert "\u20ac" in eur and "%{y:,.2f}" in eur, eur
+
+
+def test_percent_tickformat_keeps_small_drawdowns_legible():
+    from manifoldbt.plot._convert import percent_tickformat
+
+    assert percent_tickformat(-0.35) == ".0%"
+    assert percent_tickformat(-0.02) == ".1%"
+    assert percent_tickformat(-0.0037) == ".2%", "a -0.37% max dd must not read as 0%"
+
+
+def test_run_currency_reads_the_manifest_and_survives_its_absence():
+    from manifoldbt.plot._convert import run_currency
+
+    class WithManifest:
+        manifest = {"config": {"currency": "BTC"}}
+
+    assert run_currency(WithManifest()) == "BTC"
+    assert run_currency(object()) == "USD", "no manifest must fall back, not raise"

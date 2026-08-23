@@ -8,6 +8,8 @@ Demonstrates:
   - Diagnostics (lookahead, exposure stability, risk)
   - result.summary() rich output
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/01_trend_following.py
 """

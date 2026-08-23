@@ -11,6 +11,8 @@ The idea: fit a rolling OLS regression on price. When the slope is steep
 and the R² is high (price moves in a straight line), we have a strong trend.
 Size proportionally to slope strength * R² confidence.
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/04_linear_regression.py
 """

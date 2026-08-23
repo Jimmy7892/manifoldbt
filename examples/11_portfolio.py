@@ -7,6 +7,8 @@ Demonstrates:
   - Periodic rebalancing
   - Per-strategy breakdown
 
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/11_portfolio.py
 """

@@ -8,6 +8,13 @@ the same signal four ways so the difference is visible in one place:
     stop              wait for a breakout, fill through the level (taker + gap)
     limit on a signal rest on a level the DSL computes (here: 1 ATR below close)
 
+Demonstrates:
+  - market, limit, stop and signal-priced entries, side by side
+  - passive fills (maker, no slippage) against aggressive ones
+  - an entry resting on a level the DSL computes
+
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/20_entry_orders.py
 """

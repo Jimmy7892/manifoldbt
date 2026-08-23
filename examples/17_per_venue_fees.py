@@ -1,4 +1,4 @@
-"""Example 17: Per-Venue Fees — charge each symbol its own fee schedule.
+"""Per-venue fees — charge each symbol its own fee schedule.
 
 Real desks route different assets to different exchanges (or liquidity tiers),
 each with its own maker/taker fees, funding column and borrow rate. ``FeeConfig``
@@ -8,6 +8,13 @@ models this directly: a ``default`` venue plus named ``per_venue`` overrides and
 Here a 4-asset momentum portfolio executes the majors (BTC, ETH) on a cheap
 venue and the alts (XRP, DOT) on a more expensive one. Single-provider universe,
 so it runs without Pro.
+
+Demonstrates:
+  - FeeConfig.per_venue: named fee schedules in one book
+  - symbol_venue: which symbol trades where
+  - the cost gap between routing majors and alts differently
+
+Data: shared store — real market data from `data/` (see examples/README.md)
 
 Usage:
     python examples/17_per_venue_fees.py

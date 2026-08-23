@@ -182,6 +182,17 @@ class Expr:
         if v == "IfElse":
             return {v: [args[0].to_json(), args[1].to_json(), args[2].to_json()]}
 
+        if v == "Choice":
+            # Choice(String, Vec<(String, Expr)>) -- serde attend une liste de
+            # paires, pas un dict : l'ORDRE des branches est porteur (la
+            # premiere sert de defaut a la compilation initiale).
+            return {"Choice": [args[0], [[k, e.to_json()] for k, e in args[1]]]}
+
+        if v == "OnTimeframe":
+            # OnTimeframe(String, Box<Expr>) -- l'expression est evaluee sur la
+            # grille de la timeframe nommee puis etalee en escalier.
+            return {"OnTimeframe": [args[0], args[1].to_json()]}
+
         if v == "Column":
             return {"Column": args[0]}
         if v == "Literal":
@@ -518,6 +529,62 @@ def when(condition: Expr, true_value: Any = 1.0, false_value: Any = float("nan")
     return Expr("IfElse", condition, _coerce(true_value), _coerce(false_value))
 
 
+def choice(name: str, branches: "dict[str, Expr]", *, description: str = "") -> Expr:
+    """Balayer un CHOIX d'expression, pas seulement un nombre.
+
+    Un ``param()`` ordinaire porte une valeur numerique. ``choice()`` porte un
+    NOM, et chaque nom designe une sous-expression differente. Le moteur
+    remplace le noeud entier par la branche choisie AVANT de simuler, donc une
+    combinaison n'evalue que sa propre branche : les autres n'existent plus.
+
+    C'est ce qui le distingue d'un ``when()`` imbrique, qui construit toutes
+    les variantes et tranche barre par barre.
+
+    Usage (balayer la timeframe d'une bande, sim en 1m)::
+
+        bande = mbt.choice("band", {
+            "30m": mbt.tf("30m").apply(sma(close, mbt.param("len"))),
+            "1h":  mbt.tf("1h").apply(sma(close, mbt.param("len"))),
+            "2h":  mbt.tf("2h").apply(sma(close, mbt.param("len"))),
+        })
+        # grille : {"len": [10, 20, 30], "band": ["30m", "1h", "2h"]}
+
+    Noter le ``apply()``. Ecrit ``sma(mbt.tf("30m").close, param("len"))``, le
+    balayage n'aurait pas le sens attendu : la periode compterait des barres de
+    SIMULATION sur une colonne etalee en escalier, donc les trois branches
+    lisseraient le meme nombre de MINUTES au lieu de 10, 20 ou 30 bougies de
+    leur timeframe. Voir :func:`tf`.
+
+    Les branches acceptent n'importe quelle expression, donc le meme mecanisme
+    balaie une colonne exogene, un actif ou un type d'indicateur.
+
+    Args:
+        name: nom du parametre selecteur, a mettre dans la grille.
+        branches: nom de branche -> expression. L'ordre compte : la premiere
+            sert de defaut quand le parametre est absent.
+        description: metadonnee libre.
+
+    Raises:
+        ValueError: si ``branches`` est vide.
+    """
+    if not branches:
+        raise ValueError(
+            f"choice({name!r}) needs at least one branch; an empty choice has "
+            f"nothing to resolve to."
+        )
+    items = [(str(k), _coerce(v)) for k, v in branches.items()]
+    expr = Expr("Choice", name, items)
+    # Declare le selecteur comme un parametre a part entiere, sans quoi le
+    # balayer serait refuse par la validation ("parameter not declared").
+    expr._param_meta = {
+        "name": name,
+        "default": items[0][0],
+        "range": None,
+        "description": description,
+    }
+    return expr
+
+
 def exo(name: str, column: Optional[str] = None) -> Expr:
     """Reference an exogenous data column.
 
@@ -626,6 +693,28 @@ class TimeframeRef:
         """Reference any column from this timeframe."""
         return col(f"{self._tf}.{name}")
 
+    def apply(self, expr: "Expr") -> Expr:
+        """Evaluate *expr* ON this timeframe's own grid, then step-hold the
+        result back onto the simulation grid (forward-filled, no lookahead:
+        a completed bar's value becomes readable from the next bar on).
+
+        This is what makes higher-timeframe INDICATORS correct. Periods
+        inside *expr* count in THIS timeframe's bars::
+
+            h1 = bt.tf("1h")
+            band = h1.apply(sma(close, mbt.param("len")))   # len = HOURS
+
+        is a true SMA of ``len`` hourly closes, sweepable like any param.
+        By contrast ``sma(h1.close, 20)`` counts 20 SIMULATION bars over a
+        step-held hourly series -- on a 1m simulation that is a 20-MINUTE
+        smoothing of a staircase, not a 20-hour average.
+
+        Inside *expr*, ``close``/``open``/... refer to this timeframe's own
+        resampled columns. Requires ``extra_timeframes`` to declare the
+        timeframe. Nesting ``apply`` inside another ``apply`` is rejected.
+        """
+        return Expr("OnTimeframe", self._tf, _coerce(expr))
+
     def __repr__(self) -> str:
         return f"TimeframeRef({self._tf!r})"
 
@@ -633,12 +722,48 @@ class TimeframeRef:
 def tf(timeframe: str) -> TimeframeRef:
     """Reference a higher timeframe for multi-TF strategies.
 
-    Usage::
+    Two different things, and the distinction matters::
 
         h1 = bt.tf("1h")
-        trend = ema(h1.close, 20) > ema(h1.close, 50)
+
+        h1.close                        # a COLUMN: the last closed hourly
+                                        # close, held across the minute bars
+        h1.apply(ema(close, 20))        # an INDICATOR on the hourly grid:
+                                        # 20 counts hourly candles
 
     Requires ``extra_timeframes={"1h": Interval.hours(1)}`` in config.
+
+    .. warning::
+       **An indicator applied to** ``h1.close`` **counts SIMULATION bars, not
+       candles of the higher timeframe.** The column is forward-filled onto the
+       simulation grid, so an indicator over it counts rows of that grid.
+
+       On 1-minute bars, ``sma(h1.close, 8)`` averages the last 8 *minutes* of
+       a step function — which is the last closed hourly close, not an 8-hour
+       average. Measured on a ramp of +10/hour, it lags 1.63 h where a true
+       8-hour mean lags 5.45 h.
+
+       Multiplying by the ratio of the two intervals does not fix it either.
+       ``sma(h1.close, 8 * 60)`` averages 480 rows of the step function: at
+       every move it ramps in over 60 minutes instead of stepping, and its
+       window spans 9 hourly values with unequal weights rather than 8 with
+       equal ones. Measured against a true 8-hour mean on an impulse (one hour
+       at 200, base 100, so the true signal spans 12.5): the error reaches
+       12.29, or 98 % of that span. A ramp cannot reveal this — a box filter
+       leaves a straight line straight — which is why a lag measurement alone
+       reads correct.
+
+       Use :meth:`TimeframeRef.apply`, which evaluates on the hourly grid and
+       then step-holds the result. On that same impulse it matches the true
+       8-hour mean exactly, on every bar::
+
+           sma(h1.close, 8)          # 8 minutes of a step (gap 12.29)
+           sma(h1.close, 8 * 60)     # 480 minutes of a step (gap 12.29)
+           h1.apply(sma(close, 8))   # the 8-hour mean (gap 0.00)
+
+       The ~1 h of lag common to all three is the timeframe itself: an hourly
+       bar is only readable once closed, which is what makes it free of
+       look-ahead.
     """
     return TimeframeRef(timeframe)
 

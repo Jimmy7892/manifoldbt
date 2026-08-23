@@ -7,6 +7,13 @@ Strategy:
 
 Demonstrates every plotting function available in manifoldbt.
 
+Demonstrates:
+  - every plotting function in manifoldbt, on one result
+  - tearsheet, equity, drawdown, monthly and annual returns
+  - rolling Sharpe and volatility, returns histogram
+
+Data: shared store — real market data from `data/` (see examples/README.md)
+
 Usage:
     python examples/06_full_visualization.py
 """
