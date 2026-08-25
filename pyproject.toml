@@ -1,35 +1,101 @@
+# GENERATED FILE - do not edit.
+#
+# Projected from the engine's crates/bt-python/pyproject.toml at release
+# time by scripts/gen_public_pyproject.py. That file is what maturin
+# builds the published wheels from, so it is the only source of truth for
+# dependencies, extras and classifiers. Editing this copy by hand is how
+# the two drifted apart in the first place.
+#
+# The build-system and [tool.maturin] sections are deliberately absent:
+# this repository holds no Rust and cannot build the package. Install it
+# from PyPI with `pip install manifoldbt`.
+
 [project]
 name = "manifoldbt"
 version = "0.19.1"
 description = "Rust-powered backtesting engine for quantitative research"
+readme = "README.md"
 requires-python = ">=3.9"
-license = { file = "LICENSE" }
-license-files = ["LICENSE"]
-keywords = ["backtesting", "trading", "quantitative-finance", "rust"]
+keywords = [
+    "backtesting",
+    "trading",
+    "quantitative-finance",
+    "rust",
+    "quant",
+]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
     "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Information Analysis",
 ]
-dependencies = ["pyarrow>=14.0"]
+dependencies = [
+    "pyarrow>=14.0",
+    "numpy>=1.21",
+]
 
 [project.optional-dependencies]
-plot = ["matplotlib>=3.7"]
-pandas = ["pandas>=1.5"]
-polars = ["polars>=0.20"]
-plotly = ["plotly>=5.0"]
-all = ["matplotlib>=3.7", "plotly>=5.0", "pandas>=1.5", "polars>=0.20"]
-dev = ["pytest>=7.0", "polars>=0.20", "pandas>=1.5", "pyarrow>=14.0", "matplotlib>=3.7"]
+plot = [
+    "plotly>=5.0",
+    "pywebview>=4.0",
+]
+window = [
+    "pywebview>=4.0",
+]
+png = [
+    "kaleido",
+]
+gpu = [
+    "nvidia-cuda-nvrtc-cu12>=12.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cuda-nvrtc-cu12>=12.0; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "nvidia-cuda-nvrtc-cu12>=12.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+pandas = [
+    "pandas>=1.5",
+]
+polars = [
+    "polars>=0.20",
+]
+plotly = [
+    "plotly>=5.0",
+]
+rich = [
+    "rich>=13.0",
+]
+all = [
+    "plotly>=5.0",
+    "kaleido",
+    "pywebview>=4.0",
+    "pandas>=1.5",
+    "polars>=0.20",
+    "rich>=13.0",
+]
+dev = [
+    "pytest>=7.0",
+    "polars>=0.20",
+    "pandas>=1.5",
+    "pyarrow>=14.0",
+    "plotly>=5.0",
+    "rich>=13.0",
+]
 
 [project.scripts]
 manifoldbt = "manifoldbt.cli:main"
 
 [project.urls]
-Homepage = "https://manifold-bt.com"
+Homepage = "https://www.manifoldbt.com"
+Documentation = "https://www.manifoldbt.com/docs/documentation.html"
 Repository = "https://github.com/manifoldbt/manifoldbt"
+Discord = "https://discord.gg/bvU6Wjc72d"
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
