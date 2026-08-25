@@ -30,6 +30,15 @@ pd = pytest.importorskip("pandas")
 
 from manifoldbt.helpers import ExecutionPrice, Interval, Slippage  # noqa: E402
 
+# The look-ahead detector is a Pro feature, and the perturbation
+# assertions count sub-daily bars: coarsened to the Community daily
+# floor they compare 4 bars and conclude nothing.
+pytestmark = pytest.mark.skipif(
+    bt.license_info()[0] != "Pro",
+    reason="requires Pro: skipped on a Community wheel",
+)
+
+
 # Three days of 1-minute bars: enough for the hourly SMA to have a history,
 # small enough not to weigh on the suite.
 N_BARS = 3 * 1440

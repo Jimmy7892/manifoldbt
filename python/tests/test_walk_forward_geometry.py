@@ -21,6 +21,16 @@ import pytest
 
 import manifoldbt as bt
 
+# Walk-forward optimization is a Pro feature: on a Community wheel,
+# run_walk_forward raises LicenseError before any geometry is read, so
+# every assertion below about folds and warmup would fail on the gate,
+# not on what it tests. The suite skips, and names why.
+pytestmark = pytest.mark.skipif(
+    bt.license_info()[0] != "Pro",
+    reason="requires Pro: skipped on a Community wheel",
+)
+
+
 pd = pytest.importorskip("pandas")
 np = pytest.importorskip("numpy")
 
