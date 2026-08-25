@@ -1,14 +1,7 @@
-# GENERATED FILE - do not edit.
+# Generated file, do not edit by hand.
 #
-# Projected from the engine's crates/bt-python/pyproject.toml at release
-# time by scripts/gen_public_pyproject.py. That file is what maturin
-# builds the published wheels from, so it is the only source of truth for
-# dependencies, extras and classifiers. Editing this copy by hand is how
-# the two drifted apart in the first place.
-#
-# The build-system and [tool.maturin] sections are deliberately absent:
-# this repository holds no Rust and cannot build the package. Install it
-# from PyPI with `pip install manifoldbt`.
+# manifoldbt ships as pre-built wheels for Linux, Windows and macOS.
+# Install it with `pip install manifoldbt`.
 
 [project]
 name = "manifoldbt"
