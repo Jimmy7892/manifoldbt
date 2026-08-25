@@ -245,6 +245,46 @@ runs both on the same strategy — including perturbing every future bar — and
 prints what each method concludes, so the difference is visible rather than
 asserted.
 
+## Correctness
+
+Speed is worth nothing if the fills are wrong. Everything in this section is a
+test in this repository, and it runs in CI against the wheel **published on
+PyPI**, not against the source, on five Python versions. No licence is
+configured in that job on purpose, so what it exercises is the experience of
+someone who has just run `pip install manifoldbt`, and the run prints which
+tests skipped rather than showing a green tick that hides them.
+
+**Fill-level parity with vectorbt.**
+[`test_parity_vectorbt.py`](https://github.com/manifoldbt/manifoldbt/blob/master/python/tests/test_parity_vectorbt.py)
+compares entry price, exit price and exit reason **trade by trade**, not summary
+statistics: market take-profit, market stop-loss, stop-loss/take-profit
+brackets, shorts, trailing stops, and fees across multiple round trips.
+
+**Resting limit entries are checked without vectorbt**, against an independent
+NumPy model written from the order semantics rather than from the engine, so the
+reference cannot inherit the engine's own mistakes.
+
+**Look-ahead.**
+[`test_lookahead_blind_spot.py`](https://github.com/manifoldbt/manifoldbt/blob/master/python/tests/test_lookahead_blind_spot.py)
+and
+[`test_lookahead_custom_exec.py`](https://github.com/manifoldbt/manifoldbt/blob/master/python/tests/test_lookahead_custom_exec.py),
+alongside the worked example above, which exists to demonstrate a leak the
+detector **cannot** see and to say so plainly.
+
+### What is not covered
+
+The edges, stated rather than left to be discovered:
+
+- Perpetual funding is simulated but has no cross-engine parity test.
+- The largest universe under test is three instruments. Cross-sectional research
+  across thousands of assets is exercised by the sweep benchmarks, not by the
+  correctness suite.
+- Look-ahead coverage is two regression tests and one worked example, not a
+  systematic battery of leak archetypes.
+
+Independent verification is welcome. A reproduction showing a fill this engine
+gets wrong is the most useful report this project can receive.
+
 ## Performance
 
 Every number below comes from a benchmark that runs in public CI on a standard
