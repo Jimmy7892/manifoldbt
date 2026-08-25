@@ -8,7 +8,14 @@
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/bvU6Wjc72d"><img src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/bvU6Wjc72d"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the ManifoldBT Discord" height="34"></a>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/manifoldbt/"><img src="https://img.shields.io/pypi/v/manifoldbt?logo=pypi&logoColor=white&color=2f6fed" alt="PyPI"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/core-Rust-dea584?logo=rust&logoColor=white" alt="Rust core">
+  <a href="https://github.com/manifoldbt/manifoldbt/actions/workflows/bench-vs-vectorbt.yml"><img src="https://img.shields.io/badge/benchmarks-public%20CI-2ea44f?logo=githubactions&logoColor=white" alt="Benchmarks in public CI"></a>
 </p>
 
 <p align="center">
@@ -26,8 +33,8 @@ sequential fill simulation with realistic fees, slippage, funding and look-ahead
 
 ## Why ManifoldBT
 
-- **Fast**: 10M bars in 317 ms. 78x faster than vectorbt, 308x once you also want drawdown and Sharpe, ~3,500x faster than backtrader. [Measured in public CI](#performance), every run linked.
-- **Expressive**: fluent DSL with 30+ indicators, conditional logic, cross-asset references
+- **Fast**: 10M bars in 329 ms. 79x faster than vectorbt, and 311x once you also want drawdown and Sharpe. [Measured in public CI](#performance), every run linked.
+- **Expressive**: fluent DSL with 63 indicators and 38 candlestick patterns, conditional logic, cross-asset references
 - **Rigorous**: Monte Carlo, walk-forward, parameter sweeps, lookahead detection, exposure diagnostics
 - **Portable**: `pip install`, no Rust toolchain needed. Works on Python 3.9+.
 
@@ -49,6 +56,16 @@ only adds the NVIDIA runtime compiler (~180 MB) that compiles them on your
 machine. Skip it if you already have a CUDA toolkit installed. An NVIDIA driver
 is required, and GPU acceleration is a Pro feature; everything else runs at full
 speed on the CPU.
+
+### Staying up to date
+
+manifoldbt asks PyPI once a day, in the background, whether a newer release
+exists, and prints a one-line notice under the banner when one does. It never
+delays an import (the notice is the previous run's answer, read from a local
+cache) and it sends nothing: the request is a plain GET of a public JSON
+document. Set `MANIFOLDBT_NO_UPDATE_CHECK=1` to turn it off, and
+`mbt.check_for_update()` to ask on demand -- it returns the newer version, or
+`None` when you are current.
 
 ## Quick Start
 
@@ -127,6 +144,59 @@ manifoldbt import-csv data.csv --symbol EURUSD --symbol-id 1 --interval 1m
 manifoldbt ingest --provider binance --symbol BTCUSDT --symbol-id 1 --start ... --end ...
 ```
 
+## Higher timeframes
+
+Declare the timeframes you want alongside the simulation one, then read them
+with `mbt.tf(...)`. Columns are forward-filled onto the simulation grid, and a
+bar's value only becomes readable once that bar has closed, so there is no
+look-ahead.
+
+```python
+config = mbt.BacktestConfig(
+    ...,
+    bar_interval=Interval.minutes(1),                 # simulate on 1m
+    extra_timeframes={"1h": Interval.hours(1)},       # also resample to 1h
+)
+
+h1 = mbt.tf("1h")
+h1.close          # the last closed hourly close, held across the minute bars
+```
+
+For an **indicator** on a higher timeframe, use `.apply(...)`. It evaluates the
+expression on that timeframe's own grid, so the period counts in *its* bars:
+
+```python
+from manifoldbt.indicators import close, sma
+
+band = mbt.tf("1h").apply(sma(close, 20))     # mean of 20 HOURLY closes
+```
+
+> Careful: `sma(mbt.tf("1h").close, 20)` is **not** the same thing. That reads
+> the step-held hourly series on the simulation grid, so the period counts in
+> simulation bars: on a 1m simulation it is a 20-*minute* smoothing of an hourly
+> staircase. Use `.apply(...)` whenever you want an indicator *of* the higher
+> timeframe.
+
+## Sweeping a choice, not just a number
+
+`mbt.param(...)` sweeps numbers. `mbt.choice(...)` sweeps *expressions*: the
+selector becomes a grid axis, and each combination resolves to its branch before
+the simulation runs, so the branches it did not pick cost nothing.
+
+```python
+band = mbt.choice("band", {
+    "30m": mbt.tf("30m").apply(sma(close, mbt.param("len"))),
+    "1h":  mbt.tf("1h").apply(sma(close, mbt.param("len"))),
+    "2h":  mbt.tf("2h").apply(sma(close, mbt.param("len"))),
+})
+
+sweep = mbt.run_sweep(strategy, {"band": ["30m", "1h", "2h"],
+                                 "len": range(10, 210, 10)}, config, store)
+```
+
+The branches can hold any expression, so the same mechanism sweeps which
+exogenous column to use, which asset to reference, or which indicator to apply.
+
 ## Examples
 
 | # | Example | What it shows |
@@ -150,6 +220,30 @@ manifoldbt ingest --provider binance --symbol BTCUSDT --symbol-id 1 --start ... 
 | 16 | [Exogenous Data](https://github.com/manifoldbt/manifoldbt/blob/master/examples/16_hashrate_exogene.py) | External series (e.g. hashrate) as a signal |
 | 17 | [Per-Venue Fees](https://github.com/manifoldbt/manifoldbt/blob/master/examples/17_per_venue_fees.py) | Per-venue funding & borrow costs |
 | 18 | [CSV Import](https://github.com/manifoldbt/manifoldbt/blob/master/examples/18_csv_import.py) | Load OHLCV from CSV (standard / MT4 / MT5) |
+| 19 | [Custom Indicators](https://github.com/manifoldbt/manifoldbt/blob/master/examples/19_custom_indicators.py) | Write the ones the library does not ship |
+| 20 | [Entry Orders](https://github.com/manifoldbt/manifoldbt/blob/master/examples/20_entry_orders.py) | Rest an entry at a price instead of taking the close |
+| 21 | [Computed Fill Level](https://github.com/manifoldbt/manifoldbt/blob/master/examples/21_fill_at_computed_level.py) | Fill at a level the strategy computes |
+| 22 | [Yahoo Equities](https://github.com/manifoldbt/manifoldbt/blob/master/examples/22_yahoo_equities.py) | Stocks, ETFs, indices, FX and futures |
+| 23 | [Crypto Options](https://github.com/manifoldbt/manifoldbt/blob/master/examples/23_deribit_options.py) | Deribit contracts that actually expire |
+| 24 | [Option Spread](https://github.com/manifoldbt/manifoldbt/blob/master/examples/24_option_spread.py) | A bull call spread, held to expiration |
+| 25 | [Look-Ahead Trap](https://github.com/manifoldbt/manifoldbt/blob/master/examples/25_lookahead_trap.py) | Which audit answers which question |
+
+## Look-ahead
+
+`mbt.detect_lookahead` re-runs a strategy over different windows and compares
+the trades they have in common. That is what isolates bias coming from the
+engine or from a strategy's own use of time.
+
+A parameter derived from the data *before* the backtest is a different
+question: a threshold computed over the whole history in a notebook and then
+passed in as a number is the same number in every run, so no re-run-based
+method can weigh it. Treat any parameter that came from data as part of the
+pipeline, re-derive it on the window under test, and compare the results.
+
+[`examples/25_lookahead_trap.py`](https://github.com/manifoldbt/manifoldbt/blob/master/examples/25_lookahead_trap.py)
+runs both on the same strategy — including perturbing every future bar — and
+prints what each method concludes, so the difference is visible rather than
+asserted.
 
 ## Performance
 
@@ -159,26 +253,30 @@ engine from PyPI the way a user would, generates its own data, checks that the
 engines produced the **same result**, and only then reports how long each took:
 a workload they disagree on gets no published timing at all.
 
-**Latest run: [#11](https://github.com/manifoldbt/manifoldbt/actions/runs/32396472073)**
-ran on Linux x86_64, 4 vCPU, Python 3.12, manifoldbt 0.17.3 / vectorbt 0.28.4 /
-raptorbt 0.9.0, 3 interleaved repetitions.
+**Latest run: [#13](https://github.com/manifoldbt/manifoldbt/actions/runs/32469701489)**
+ran on Linux x86_64, 4 vCPU (AMD EPYC 7763), Python 3.12, manifoldbt 0.18.0 /
+vectorbt 0.28.4 / raptorbt 0.9.0, 3 interleaved repetitions, medians reported.
 
 | Workload | Bars | ManifoldBT | vectorbt | raptorbt |
 |---|---:|---:|---:|---:|
-| SMA crossover | 10M | **317 ms** | 24.75 s (x78) | 878 ms (x2.8) |
-| ...with drawdown, Sharpe, Sortino, volatility | 10M | **317 ms** | 97.46 s (**x308**) | 894 ms (x2.8) |
-| ...with a 5 bps fee and 2 bps slippage | 10M | **316 ms** | 24.53 s (x78) | not supported |
-| EMA + RSI filter, 5 bps fee | 1M | **52 ms** | 2.21 s (x41) | not supported |
-| Five assets in one book | 1M | **140 ms** | 2.34 s (x17) | not supported |
+| SMA crossover | 10M | **327 ms** | 26.12 s (x79) | 913 ms (x2.8) |
+| ...with drawdown, Sharpe, Sortino, volatility | 10M | **329 ms** | 102.38 s (**x311**) | 909 ms (x2.8) |
+| ...with a 5 bps fee and 2 bps slippage | 10M | **337 ms** | 26.08 s (x79) | not supported |
+| EMA + RSI filter, 5 bps fee | 1M | **57 ms** | 2.35 s (x40) | not supported |
+| Five assets in one book | 1M | **148 ms** | 2.54 s (x17) | not supported |
+| Stop-loss and take-profit bracket | 10M | **934 ms** | 26.24 s (x28) | 916 ms (**x1.0**) |
 
 The second row is the one worth reading twice. Asking for a performance summary
 costs ManifoldBT nothing measurable, because it computes one during the run
-whether you read it or not, and costs vectorbt 73 seconds, because it defers the
-equity curve until a risk metric needs it and then has to build one.
+whether you read it or not, and costs vectorbt 102 seconds, because it defers
+the equity curve until a risk metric needs it and then has to build one.
 
-The fifth row is the one where ManifoldBT does worst, and it is published for
-that reason: broadcasting a column per asset is close to free for vectorbt,
-while walking five books is not free for anything.
+The last two rows are the ones where ManifoldBT does worst, and they are
+published for that reason. Broadcasting a column per asset is close to free for
+vectorbt, while walking five books is not free for anything. And on a
+stop-loss/take-profit bracket, raptorbt is level with us: the intra-bar check
+that decides which of the two triggers first is a sequential walk in both
+engines, so there is no vectorization left to win with.
 
 ### Parameter sweeps
 
@@ -203,9 +301,14 @@ The method, the parity gate and the known divergences are written up in
 
 backtrader runs the same EMA(12/26) + RSI(14) strategy on 500K 1-minute bars in
 **46,944 ms**, against **13 ms** for ManifoldBT: a factor of **3,556**. Measured
-with `benchmarks/bench_vs_competitors.py`, median of 3 runs. It sits outside the
-CI suite because its event-driven fills produce a different PnL, and the parity
-gate publishes no timing for engines that did not do the same work.
+with `benchmarks/bench_vs_competitors.py`, median of 3 runs, on a developer
+machine and not the CI runner, so it is not comparable line-for-line with the
+table above.
+
+It sits outside the CI suite because its event-driven fills produce a different
+PnL, and the parity gate publishes no timing for engines that did not do the
+same work. Treat it as an order of magnitude, not a benchmark: the two engines
+are not doing the same thing.
 
 ### How it compares
 
@@ -229,14 +332,17 @@ Full API reference, indicator list, configuration guide, and best practices:
 
 | | Community | Pro |
 |---|---|---|
+| Single backtests (`mbt.run`) | Unlimited, full speed | Unlimited, full speed |
+| Parameter sweeps & batches | Up to 256 backtests per sweep | Unlimited |
 | Output resolution | Daily | 1m, 5m, 15m, 1h |
 | Monte Carlo | 1K sims | Unlimited |
 | Walk-Forward | - | Anchored + Rolling |
 | Parameter Stability | - | Yes |
 | Free connectors (Binance, Bybit, Hyperliquid, dYdX, Bitstamp, Yahoo) | Yes | Yes |
 | Databento & Massive connectors | - | Yes |
+| GPU acceleration (`device="cuda"`) | - | Yes |
 | Safety checks (lookahead, exposure) | - | Yes |
-| Tearsheets & export | - | Yes |
+| Tearsheets & export | Yes | Yes |
 
 ## License
 
