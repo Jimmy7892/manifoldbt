@@ -265,14 +265,17 @@ pins the fee arithmetic across two round trips. The equity curve is deliberately
 left out, because a Community build caps it to daily resolution and it would not
 be an apples-to-apples comparison.
 
-**Resting limit entries are checked without vectorbt**, against an independent
-NumPy model written from the order semantics rather than from the engine, so the
-reference cannot inherit the engine's own mistakes.
+**Resting limit entries are checked without vectorbt**, which has no resting
+order to compare against. They are pinned instead by a NumPy model that computes
+the fill from raw OHLC with no call into the engine. Read it for what it is: it
+catches an implementation drifting away from the documented rule, and it does
+not independently prove the rule is the right one, because the rule was measured
+from the engine before being re-implemented.
 
-**Look-ahead.**
-[`test_lookahead_blind_spot.py`](https://github.com/manifoldbt/manifoldbt/blob/master/python/tests/test_lookahead_blind_spot.py)
-and
-[`test_lookahead_custom_exec.py`](https://github.com/manifoldbt/manifoldbt/blob/master/python/tests/test_lookahead_custom_exec.py),
+**Look-ahead.** Two regression tests in
+[`python/tests/`](https://github.com/manifoldbt/manifoldbt/tree/master/python/tests), the stricter of which corrupts every bar after
+a cut point, re-runs, and requires the equity before that point to come back
+**bit-identical**: any decision that read a future bar moves the prefix. They sit
 alongside the worked example above, which exists to demonstrate a leak the
 detector **cannot** see and to say so plainly.
 
@@ -290,7 +293,7 @@ choice was available, the pessimistic one was taken.
 | A limit entry is immediate-or-cancel | It is cancelled, and will not fill on a later bar that would have triggered it. |
 | A stop-limit's stop level is touched | The order arms and then rests at its limit, which may never fill. |
 | An order is too large for the bar | It fills over several bars at the configured participation rate, and the partially filled position is bracketed **while** it fills. |
-| Trailing stops | Never read the intra-bar path they would have to peek at to do better. |
+| Trailing stops | Never trigger on the same bar they ratchet on, which would require reading the intra-bar path. |
 | An execution-price expression evaluates to NaN | Falls back to the close and warns, rather than dropping the trade silently. |
 | A short option's maintenance margin exceeds equity | The position is force-closed on that bar. |
 | Fees, funding and borrow rates | Resolved per symbol, so venues inside one portfolio keep their own rates. |
