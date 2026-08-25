@@ -656,9 +656,18 @@ config = mbt.BacktestConfig(
 | `momentum(source, period)` | Raw price difference |
 | `macd(source, fast, slow)` | MACD line |
 | `stoch_k(period)` | Stochastic %K |
+| `stoch_d(period, d_period)` | Stochastic %D (SMA of %K) |
+| `stoch_rsi(source, period, rsi_period)` | Stochastic RSI [0-1] |
 | `williams_r(period)` | Williams %R |
 | `cci(period)` | Commodity Channel Index |
 | `adx(period)` | Average Directional Index |
+| `plus_di(period)` | Wilder's +DI (the ADX's bullish half) |
+| `minus_di(period)` | Wilder's -DI (the ADX's bearish half) |
+| `aroon_up(period)` | Aroon Up [0-100] — how recent the window's high is |
+| `aroon_down(period)` | Aroon Down [0-100] |
+| `aroon_oscillator(period)` | `aroon_up - aroon_down` [-100, 100] |
+| `ppo(source, fast, slow)` | Percentage Price Oscillator |
+| `trix(source, period)` | Rate of change of a triple-smoothed EMA |
 
 ### Volatility
 
@@ -668,6 +677,8 @@ config = mbt.BacktestConfig(
 | `natr(period)` | Normalized ATR |
 | `bollinger_bands(source, period, num_std)` | Returns (upper, middle, lower) |
 | `keltner_channels(period, multiplier)` | Returns (upper, middle, lower) |
+| `donchian_channels(period)` | Returns (upper, middle, lower) |
+| `vortex(period)` | Returns (vi_plus, vi_minus) |
 
 ### Volume
 
@@ -676,6 +687,7 @@ config = mbt.BacktestConfig(
 | `obv(source, vol)` | On-Balance Volume |
 | `vwap()` | Volume-Weighted Average Price |
 | `mfi(period)` | Money Flow Index |
+| `cmf(period)` | Chaikin Money Flow |
 
 ### Filters
 
@@ -693,6 +705,53 @@ config = mbt.BacktestConfig(
 | `source.linreg_value(window)` | Linear regression fitted value |
 | `source.linreg_r2(window)` | Linear regression R-squared |
 | `source.rolling_median(window)` | Rolling median |
+| `rolling_var(source, w)` | Rolling **population** variance (divides by `w`) |
+| `rolling_skew(source, w)` | Rolling sample skewness (pandas `.skew()`) |
+| `rolling_kurt(source, w)` | Rolling excess kurtosis (pandas `.kurt()`) |
+| `rolling_rank(source, w)` | Percent-rank of the current value in the window [0-1] |
+| `rolling_quantile(source, w, q)` | Rolling q-quantile, linear interpolation |
+| `rolling_argmax(source, w)` | Bars since the window's max (0 = now) |
+| `rolling_argmin(source, w)` | Bars since the window's min |
+| `rolling_corr(a, b, w)` | Rolling Pearson correlation |
+| `rolling_cov(a, b, w)` | Rolling sample covariance (ddof=1) |
+| `rolling_beta(y, x, w)` | Rolling OLS beta of `y` on `x` |
+
+### Signal state
+
+Pine-style helpers. The first four take a **condition**, not a numeric series.
+
+| Function | Description |
+|----------|-------------|
+| `bars_since(cond)` | Bars since `cond` was last true; NaN until it first is |
+| `streak(cond)` | Length of the current consecutive run of true |
+| `count_over(cond, w)` | Count of true bars in the trailing window |
+| `value_when(cond, source)` | `source` on the last bar where `cond` was true |
+| `rising(source, n)` | 1.0 if strictly increasing on each of the last `n` steps |
+| `falling(source, n)` | 1.0 if strictly decreasing |
+| `pivot_high(source, left, right)` | Causal pivot high — **no lookahead** |
+| `pivot_low(source, left, right)` | Causal pivot low |
+
+A pivot only appears on its **confirmation bar**, `right` bars after the pivot
+itself. That lag is what makes the signal tradable: a pivot detector that
+reports on the pivot bar has read the future.
+
+### Cross-sectional (multi-asset)
+
+These read the whole universe at one timestamp, so their argument must be a
+column or a named signal — not a sub-expression. Define the sub-expression as
+its own signal first.
+
+| Function | Description |
+|----------|-------------|
+| `source.cs_mean()` | Cross-sectional mean, broadcast to every symbol |
+| `source.cs_rank()` | Cross-sectional fractional rank [0-1] |
+| `cs_zscore(source)` | `(v - mean) / std` across symbols, population std |
+| `cs_demean(source)` | `v - mean` per timestamp |
+| `cs_std(source)` | Cross-sectional population std, broadcast |
+| `cs_scale(source)` | L1 (unit-gross) scaling: `v / sum(abs(v))` |
+| `cs_winsorize(source, k)` | Clip to `[mean - k*std, mean + k*std]` |
+| `cs_quantile(source, q)` | Cross-sectional q-quantile, broadcast |
+| `cs_neutralize(source, factor)` | OLS residual of `source` on `factor` |
 
 ### Time
 
@@ -705,6 +764,45 @@ config = mbt.BacktestConfig(
 | `source.rolling_mean(w)` | Rolling mean |
 | `source.rolling_std(w)` | Rolling standard deviation |
 | `source.cumsum()` | Cumulative sum |
+| `hour()`, `minute()` | Clock components (UTC) |
+| `day_of_week()` | 0 = Monday … 6 = Sunday |
+| `month()`, `day_of_month()` | Calendar components |
+| `year()` | Full year, e.g. 2024 |
+| `week_of_year()` | ISO-8601 week [1-53] |
+| `day_of_year()` | Ordinal day [1-366] |
+| `is_month_start()`, `is_month_end()` | 1.0 / 0.0 |
+| `is_quarter_end()` | 1.0 on the last day of Mar/Jun/Sep/Dec |
+| `is_weekend()` | 1.0 on Saturday or Sunday |
+
+ISO weeks belong to the year of their Thursday, so `week_of_year()` on 1 January
+can read 52 or 53 — that is the definition, not a bug.
+
+### TA-Lib compatibility
+
+Bit-exact against TA-Lib 0.7.1, pinned by a stored fixture of 522 bars.
+
+| Family | Functions |
+|--------|-----------|
+| Math transform | `sin` `cos` `tan` `asin` `acos` `atan` `sinh` `cosh` `log10` |
+| Price transform | `median_price()` `typical_price()` `weighted_close()` `average_price()` |
+| Pattern recognition | 38 `cdl_*` functions (see below) |
+
+Every `cdl_*` returns one of `{-100, -80, 0, 80, 100}`: the sign is the
+direction, the magnitude is TA-Lib's confidence, and **warmup bars are 0, not
+NaN** — a detector's `0` already means "no pattern here".
+
+```
+cdl_doji  cdl_spinning_top  cdl_long_legged_doji  cdl_short_line  cdl_long_line
+cdl_high_wave  cdl_rickshaw_man  cdl_marubozu  cdl_closing_marubozu
+cdl_belt_hold  cdl_dragonfly_doji  cdl_gravestone_doji  cdl_engulfing
+cdl_hammer  cdl_inverted_hammer  cdl_hanging_man  cdl_shooting_star  cdl_takuri
+cdl_matching_low  cdl_homing_pigeon  cdl_harami  cdl_harami_cross
+cdl_doji_star  cdl_piercing  cdl_thrusting  cdl_counterattack
+cdl_three_inside  cdl_three_outside  cdl_morning_star  cdl_evening_star
+cdl_dark_cloud_cover  cdl_three_white_soldiers  cdl_two_crows
+cdl_identical_three_crows  cdl_tristar  cdl_separating_lines  cdl_on_neck
+cdl_kicking
+```
 
 > All period/window arguments accept `mbt.param("name", default)` for sweep grids.
 

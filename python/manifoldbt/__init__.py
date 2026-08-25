@@ -69,14 +69,20 @@ from manifoldbt.strategy import Strategy
 from manifoldbt.sweep import SweepResult
 from manifoldbt import indicators
 
+# Managed compute. Imported eagerly, unlike `plot` and `diagnostics`: it pulls
+# nothing but the standard library, and `mbt.cloud` reading as missing until
+# something else touched it would be a worse surprise than the microseconds.
+from manifoldbt import cloud
+
 # ---------------------------------------------------------------------------
 # Version
 # ---------------------------------------------------------------------------
-try:
-    from importlib.metadata import version as _pkg_version
-    __version__ = _pkg_version("manifoldbt")
-except Exception:
-    __version__ = "0.1.0"
+from manifoldbt import _update as _update
+
+# "0.1.0" is the fallback for a source checkout on `sys.path`: there is no
+# installed distribution to read a version from, so there is nothing truthful to
+# report. The update check treats that same case as "do not compare".
+__version__ = _update.installed_version() or "0.1.0"
 
 # ---------------------------------------------------------------------------
 # License banner
@@ -93,6 +99,13 @@ def _print_banner():
 
 _print_banner()
 del _print_banner
+
+# Right under the banner, and never blocking: prints the answer PyPI gave a
+# previous run, then refreshes it on a daemon thread. Off with
+# MANIFOLDBT_NO_UPDATE_CHECK=1. Registered before the Pro summary below so that
+# atexit's LIFO order puts a late notice last, after everything else this import
+# has to say.
+_update.start()
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +132,19 @@ def _print_pro_summary() -> None:
 
 import atexit
 atexit.register(_print_pro_summary)
+
+
+def check_for_update() -> Optional[str]:
+    """Ask PyPI whether a newer manifoldbt exists. Returns its version, or None.
+
+    ``None`` means this install is current (or is a source checkout, whose version
+    nothing can be compared against). Unlike the notice printed at import, which
+    reads a cached answer, this queries PyPI and blocks until it answers.
+
+        >>> mbt.check_for_update()
+        '0.20.0'
+    """
+    return _update.check_now()
 
 
 def license_info() -> tuple:
@@ -154,19 +180,17 @@ def _require_pro(feature: str) -> None:
 def _require_pro_for_gpu(device, feature: str) -> None:
     """Gate GPU acceleration (``device="cuda"``/``"gpu"``) behind Pro.
 
-    GPU paths are also enforced natively, but that surfaces a ``PermissionError``
-    with a full traceback (GPU sweep) or a bare ``ValueError`` (stochastic). Gating
-    in Python first gives every GPU entry point the same clean ``LicenseError`` as
-    the other Pro features. No-op for CPU or for Pro users.
+    Reported here so that every GPU entry point raises the same clean
+    ``LicenseError`` as the other Pro features, instead of each surfacing its own
+    error type from deeper in the run. No-op for CPU or for Pro users.
     """
     if isinstance(device, str) and device.lower() in ("cuda", "gpu"):
         _require_pro(feature)
 
 
 # Community fan-out budget: sweeps and batches may run up to this many backtests
-# cumulatively per process for free; beyond it requires Pro. Single run() is
-# never affected. Keep in sync with the native
-# bt_license::COMMUNITY_MAX_SWEEP_COMBOS.
+# cumulatively per session for free; beyond it requires Pro. A single run() is
+# never affected. Keep in step with the engine's own limit.
 _COMMUNITY_MAX_COMBOS = 256
 
 
@@ -181,10 +205,10 @@ def _grid_combos(param_grid) -> int:
 def _require_pro_over_combos(n_combos: int, what: str) -> None:
     """Raise LicenseError if a fan-out exceeds the Community combination limit.
 
-    Fast-fail UX layer only: catches a single call that could never fit the
-    budget. The authoritative gate is the native ``require_combo_limit``,
-    which enforces the limit **cumulatively per session** — small calls also
-    consume budget there, and this mirror cannot (and must not) track that.
+    Fast-fail, so a call that could never fit the budget reports cleanly in a
+    notebook instead of part-way through the run. The budget is consumed
+    **cumulatively across the session**: a sequence of smaller calls draws on
+    the same allowance as one large one.
     """
     if n_combos <= _COMMUNITY_MAX_COMBOS or _is_pro():
         return
@@ -1338,9 +1362,8 @@ def run_walk_forward(
     (independent blocks separated by gaps, not Pardo's rolling); for Pardo's
     walk-forward use ``geometry="pardo"``.
     """
-    # Pro gate (friendly message + clean exit). Real enforcement lives natively
-    # in `py_run_walk_forward` (check_feature("walk_forward")), so this cannot be
-    # bypassed by calling the native function directly.
+    # Pro feature: report it here so a notebook gets a clean LicenseError rather
+    # than a traceback from deeper in the run.
     _require_pro("Walk-forward optimization")
     _validate_swept_params(strategy, (wf_config.get("param_grid") or {}).keys(),
                            "Walk-forward")
@@ -1795,8 +1818,11 @@ __all__ = [
     "register_exo",
     # Version
     "__version__",
+    "check_for_update",
     # Indicators (submodule)
     "indicators",
+    # Managed compute (submodule)
+    "cloud",
     # Plotting (lazy, requires plotly)
     "plot",
     # Diagnostics (lazy)

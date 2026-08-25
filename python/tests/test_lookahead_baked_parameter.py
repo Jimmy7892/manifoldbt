@@ -1,17 +1,23 @@
-"""The look-ahead the detector cannot see, pinned as a characterization test.
+"""Where re-run auditing reaches its limit, and the method that goes past it.
 
-`detect_lookahead` used to document itself as catching global look-ahead,
-"e.g. np.mean(all_prices) instead of rolling". It does not, and it cannot: both
-its sub-tests re-run the *same strategy* on a shorter window, so a threshold
-computed in a notebook and passed in as a number is identical in every run.
+Every audit that works by re-running a strategy over a different window shares
+one boundary, this engine's included: it cannot weigh a parameter that was
+computed from the data *before* the backtest started. A threshold worked out in
+a notebook and handed in as a number is the same number in every re-run, so the
+runs agree and the verdict is clean. The bias is real; it happened upstream, in
+the research step, not in the simulation.
 
-This file asserts the blind spot on purpose. A test that pins a limitation is
-worth more than a docstring promising the opposite, because the docstring was
-wrong for as long as nobody tried it.
+This file pins that boundary from both sides, so it is demonstrated rather than
+asserted:
 
-It also pins the method that DOES catch it, so the boundary is not just
-described but demonstrated: re-derive the parameter on the truncated window and
-compare the same prefix.
+  * a parameter baked at research time really does flatter the result, so there
+    is something worth catching;
+  * re-running alone returns a clean verdict on it, which is the correct answer
+    for what re-running measures;
+  * re-deriving the parameter on the truncated window does catch it, which is
+    the technique to reach for.
+
+`examples/25_lookahead_trap.py` walks the same ground with output to read.
 """
 import os
 
@@ -89,7 +95,7 @@ def _equity(result):
 
 
 def test_a_parameter_baked_at_research_time_flatters_the_result(tmp_path):
-    """First establish there IS a leak, otherwise the blind spot is moot."""
+    """First establish there IS something to catch, or the rest proves nothing."""
     from manifoldbt.indicators import close
 
     frame = _mean_reverting_daily()
@@ -110,32 +116,35 @@ def test_a_parameter_baked_at_research_time_flatters_the_result(tmp_path):
     )
 
 
-def test_the_detector_is_blind_to_it(tmp_path):
-    """Pinned limitation: PASS here is the documented, expected answer.
+def test_re_running_alone_returns_a_clean_verdict(tmp_path):
+    """A clean verdict here is the correct answer for what re-running measures.
 
-    If this ever starts failing, the detector gained the ability to audit a
-    baked parameter. That would be good news, and the warning in
-    `detect_lookahead`'s docstring should be revisited rather than this test
-    silenced.
+    The check compares runs of the same strategy over different windows. A
+    constant is identical in all of them, so there is nothing for it to disagree
+    about. The assertion on `compared` matters as much as the verdict: a verdict
+    reached without comparing any trades would say nothing either way.
+
+    Should this ever start failing, the analysis gained reach beyond re-running
+    and its documented scope should be widened, rather than this test silenced.
     """
     from manifoldbt.diagnostics import detect_lookahead
 
     frame = _mean_reverting_daily()
     result = detect_lookahead(
         _leaky(float(frame["close"].mean())),
-        _config(frame), _store(frame, tmp_path, "blind"), mode="all",
+        _config(frame), _store(frame, tmp_path, "rerun"), mode="all",
     )
 
     compared = sum(r.total_trades_overlap for r in result.reports)
-    assert compared > 0, "empty verdict, the blind spot is not what is being shown"
+    assert compared > 0, "no trades were compared, so the verdict shows nothing"
     assert result.passed, (
-        "the detector now catches a research-time constant; update the docstring "
-        "warning instead of deleting this test"
+        "re-running now resolves a research-time constant; widen the documented "
+        "scope instead of deleting this test"
     )
 
 
 def test_re_deriving_the_parameter_catches_it(tmp_path):
-    """The technique that works, and the reason the blind spot is acceptable.
+    """The technique that does reach it, and the reason the boundary is workable.
 
     Same window, same strategy shape: only the threshold differs, one computed
     with the future and one without. The equity must diverge.

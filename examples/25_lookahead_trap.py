@@ -1,4 +1,4 @@
-"""Look-ahead — the leak the detector cannot see.
+"""Look-ahead — the leak no re-run method can see, and the one that does.
 
 The classic beginner's leak, and the one that survives review: computing a
 statistic over the *whole* dataset in the notebook, then using it as a strategy

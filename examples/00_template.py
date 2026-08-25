@@ -16,7 +16,7 @@ from manifoldbt.indicators import close
 from manifoldbt.helpers import time_range, Slippage, Interval
 
 # -- Indicators ---------------------------------------------------------------
-# All 45+ indicators available: rsi, ema, sma, bollinger, macd, atr, etc.
+# All 63 indicators available: rsi, ema, sma, bollinger, macd, atr, etc.
 # See: from manifoldbt.indicators import <tab> for full list
 
 zscore = close.zscore(60)

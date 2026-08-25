@@ -8,13 +8,13 @@ import pytest
 import manifoldbt as bt
 from manifoldbt import run_sweep, run_with_parquet
 
-# The golden fixtures are 1-minute bars; on a Community license the engine caps
-# resolution to daily, so these runs produce zero trades and the assertions are
-# meaningless. CI unlocks via BT_UNLOCKED=1 (debug builds); locally this needs
-# an activated Pro license.
+# These fixtures are 1-minute bars, and the assertions below only mean something
+# at sub-daily resolution: coarsened to daily they produce zero trades and every
+# comparison passes vacuously. Sub-daily output is a Pro feature, so the suite
+# skips rather than assert on an empty result.
 pytestmark = pytest.mark.skipif(
     bt.license_info()[0] != "Pro",
-    reason="requires Pro (sub-daily resolution); activate a license or use a BT_UNLOCKED dev build",
+    reason="requires Pro: these assertions are only meaningful at sub-daily resolution",
 )
 
 

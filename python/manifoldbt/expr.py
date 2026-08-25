@@ -49,6 +49,13 @@ _UNARY_BOX = frozenset(
     [
         "Not", "CumSum", "CumProd", "Rank", "CrossSectionalMean", "CrossSectionalRank",
         "Hour", "Minute", "DayOfWeek", "Month", "DayOfMonth",
+        # Coupe transversale (multi-actif)
+        "CsZScore", "CsDemean", "CsStd", "CsScale",
+        # Etat de signal (l'argument est une CONDITION)
+        "BarsSince", "Streak",
+        # Composants calendaires
+        "Year", "WeekOfYear", "DayOfYear",
+        "IsMonthStart", "IsMonthEnd", "IsQuarterEnd", "IsWeekend",
     ]
 )
 
@@ -81,11 +88,27 @@ _EXPR_SCALAR = frozenset(
         "Kama",
         "Roc",
         "RollingMedian",
+        # Statistiques glissantes (Box<Expr>, usize)
+        "RollingVar",
+        "RollingSkew",
+        "RollingKurt",
+        "RollingRank",
+        "RollingArgMax",
+        "RollingArgMin",
+        # Aroon et etat de signal (Box<Expr>, usize)
+        "AroonUp",
+        "AroonDown",
+        "CountOver",
+        "Rising",
+        "Falling",
+        # Coupe transversale (Box<Expr>, f64)
+        "CsWinsorize",
+        "CsQuantile",
     ]
 )
 
-# Box<Expr> + usize + usize
-_EXPR_2SCALAR = frozenset(["Macd"])
+# Box<Expr> + usize + usize (ou usize + f64 pour RollingQuantile)
+_EXPR_2SCALAR = frozenset(["Macd", "PivotHigh", "PivotLow", "RollingQuantile"])
 
 # Box<Expr> + usize + usize + usize
 _EXPR_3SCALAR = frozenset(["MacdSignal", "MacdHist"])
@@ -97,13 +120,16 @@ _EXPR_SCALAR_F64 = frozenset(["BollingerUpper", "BollingerLower", "BollingerWidt
 _HLC_NO_SCALAR = frozenset(["TrueRange"])
 
 # 3×Box<Expr> + usize — same layout as Atr
-_HLC_USIZE = frozenset(["StochK", "WilliamsR", "Cci", "Adx", "Natr"])
+_HLC_USIZE = frozenset(["StochK", "WilliamsR", "Cci", "Adx", "Natr", "PlusDi", "MinusDi"])
 
 # 3×Box<Expr> + usize + f64
 _HLC_USIZE_F64 = frozenset(["KeltnerUpper", "KeltnerLower", "SuperTrend"])
 
 # 2×Box<Expr>
-_BINARY_EXPR = frozenset(["Obv", "CrossAbove", "CrossBelow"])
+_BINARY_EXPR = frozenset(["Obv", "CrossAbove", "CrossBelow", "ValueWhen", "CsNeutralize"])
+
+# 2×Box<Expr> + usize — statistiques glissantes de paire
+_BINARY_EXPR_USIZE = frozenset(["RollingCorr", "RollingCov", "RollingBeta"])
 
 # 4×Box<Expr>
 _HLCV_NO_SCALAR = frozenset(["Vwap", "AdLine"])
@@ -166,6 +192,10 @@ class Expr:
         if v in _BINARY_EXPR:
             # Obv/CrossAbove/CrossBelow(Box<Expr>, Box<Expr>)
             return {v: [args[0].to_json(), args[1].to_json()]}
+
+        if v in _BINARY_EXPR_USIZE:
+            # RollingCorr/RollingCov/RollingBeta(Box<Expr>, Box<Expr>, usize)
+            return {v: [args[0].to_json(), args[1].to_json(), args[2]]}
 
         if v in _HLCV_NO_SCALAR:
             # Vwap/AdLine(Box<Expr>, Box<Expr>, Box<Expr>, Box<Expr>)
@@ -362,29 +392,71 @@ class Expr:
         """Rolling median."""
         return Expr("RollingMedian", self, _resolve_period(window))
 
+    def rolling_var(self, window: Period) -> Expr:
+        """Rolling population variance (divides by the window, not n-1)."""
+        return Expr("RollingVar", self, _resolve_period(window))
+
+    def rolling_skew(self, window: Period) -> Expr:
+        """Rolling sample skewness (adjusted Fisher-Pearson, like pandas)."""
+        return Expr("RollingSkew", self, _resolve_period(window))
+
+    def rolling_kurt(self, window: Period) -> Expr:
+        """Rolling excess kurtosis (bias-corrected Fisher, like pandas)."""
+        return Expr("RollingKurt", self, _resolve_period(window))
+
+    def rolling_rank(self, window: Period) -> Expr:
+        """Rolling percent-rank of the current value in the window, in [0, 1]."""
+        return Expr("RollingRank", self, _resolve_period(window))
+
+    def rolling_argmax(self, window: Period) -> Expr:
+        """Bars since the window's maximum (0 = the current bar is the max)."""
+        return Expr("RollingArgMax", self, _resolve_period(window))
+
+    def rolling_argmin(self, window: Period) -> Expr:
+        """Bars since the window's minimum (0 = the current bar is the min)."""
+        return Expr("RollingArgMin", self, _resolve_period(window))
+
+    def rolling_quantile(self, window: Period, q: Span = 0.5) -> Expr:
+        """Rolling q-quantile over the window (linear interpolation)."""
+        return Expr("RollingQuantile", self, _resolve_period(window), _resolve_span(q))
+
+    def rolling_corr(self, other: "Expr", window: Period) -> Expr:
+        """Rolling Pearson correlation with another series."""
+        return Expr("RollingCorr", self, _coerce(other), _resolve_period(window))
+
+    def rolling_cov(self, other: "Expr", window: Period) -> Expr:
+        """Rolling sample covariance (ddof=1) with another series."""
+        return Expr("RollingCov", self, _coerce(other), _resolve_period(window))
+
+    def rolling_beta(self, other: "Expr", window: Period) -> Expr:
+        """Rolling OLS beta of self on ``other``: ``cov(self, other) / var(other)``."""
+        return Expr("RollingBeta", self, _coerce(other), _resolve_period(window))
+
     def macd_line(self, fast: int = 12, slow: int = 26) -> Expr:
         """MACD line (fast EMA - slow EMA)."""
-        return Expr("Macd", self, fast, slow)
+        return Expr("Macd", self, _resolve_period(fast), _resolve_period(slow))
 
     def macd_signal(self, fast: int = 12, slow: int = 26, signal: int = 9) -> Expr:
         """MACD signal line."""
-        return Expr("MacdSignal", self, fast, slow, signal)
+        return Expr("MacdSignal", self, _resolve_period(fast), _resolve_period(slow),
+                    _resolve_period(signal))
 
     def macd_hist(self, fast: int = 12, slow: int = 26, signal: int = 9) -> Expr:
         """MACD histogram."""
-        return Expr("MacdHist", self, fast, slow, signal)
+        return Expr("MacdHist", self, _resolve_period(fast), _resolve_period(slow),
+                    _resolve_period(signal))
 
     def bollinger_upper(self, period: int = 20, num_std: float = 2.0) -> Expr:
         """Bollinger upper band."""
-        return Expr("BollingerUpper", self, period, num_std)
+        return Expr("BollingerUpper", self, _resolve_period(period), _resolve_span(num_std))
 
     def bollinger_lower(self, period: int = 20, num_std: float = 2.0) -> Expr:
         """Bollinger lower band."""
-        return Expr("BollingerLower", self, period, num_std)
+        return Expr("BollingerLower", self, _resolve_period(period), _resolve_span(num_std))
 
     def bollinger_width(self, period: int = 20, num_std: float = 2.0) -> Expr:
         """Bollinger bandwidth."""
-        return Expr("BollingerWidth", self, period, num_std)
+        return Expr("BollingerWidth", self, _resolve_period(period), _resolve_span(num_std))
 
     def cross_above(self, other: "Expr") -> Expr:
         """True when self crosses above other."""
@@ -393,6 +465,43 @@ class Expr:
     def cross_below(self, other: "Expr") -> Expr:
         """True when self crosses below other."""
         return Expr("CrossBelow", self, _coerce(other))
+
+    # -- Signal state (Pine-style) -------------------------------------------
+    #
+    # ``bars_since``/``streak``/``count_over`` read *self* as a condition, not
+    # as a numeric series, so they belong on the boolean side of a strategy.
+
+    def bars_since(self) -> Expr:
+        """Bars since this condition was last true. NaN until it first is."""
+        return Expr("BarsSince", self)
+
+    def streak(self) -> Expr:
+        """Length of the current consecutive run of true ending at this bar."""
+        return Expr("Streak", self)
+
+    def count_over(self, window: Period) -> Expr:
+        """Count of bars where this condition is true in the trailing window."""
+        return Expr("CountOver", self, _resolve_period(window))
+
+    def value_when(self, source: "Expr") -> Expr:
+        """Value of ``source`` on the last bar where this condition was true."""
+        return Expr("ValueWhen", self, _coerce(source))
+
+    def rising(self, n: Period) -> Expr:
+        """1.0 if self strictly increased on each of the last ``n`` steps."""
+        return Expr("Rising", self, _resolve_period(n))
+
+    def falling(self, n: Period) -> Expr:
+        """1.0 if self strictly decreased on each of the last ``n`` steps."""
+        return Expr("Falling", self, _resolve_period(n))
+
+    def pivot_high(self, left: Period, right: Period) -> Expr:
+        """Causal pivot high, confirmed ``right`` bars later (no lookahead)."""
+        return Expr("PivotHigh", self, _resolve_period(left), _resolve_period(right))
+
+    def pivot_low(self, left: Period, right: Period) -> Expr:
+        """Causal pivot low, confirmed ``right`` bars later (no lookahead)."""
+        return Expr("PivotLow", self, _resolve_period(left), _resolve_period(right))
 
     # -- Cumulative ----------------------------------------------------------
 
@@ -412,6 +521,38 @@ class Expr:
 
     def cs_rank(self) -> Expr:
         return Expr("CrossSectionalRank", self)
+
+    def cs_zscore(self) -> Expr:
+        """Cross-sectional z-score across symbols, on the population std."""
+        return Expr("CsZScore", self)
+
+    def cs_demean(self) -> Expr:
+        """Cross-sectional demeaning: ``v - cross_mean`` per timestamp."""
+        return Expr("CsDemean", self)
+
+    def cs_std(self) -> Expr:
+        """Cross-sectional population std, broadcast to every symbol."""
+        return Expr("CsStd", self)
+
+    def cs_scale(self) -> Expr:
+        """Cross-sectional L1 (unit-gross) scaling: ``v / sum(|v_j|)``."""
+        return Expr("CsScale", self)
+
+    def cs_winsorize(self, k: Span = 3.0) -> Expr:
+        """Clip to ``[mean - k*std, mean + k*std]`` across symbols."""
+        return Expr("CsWinsorize", self, _resolve_span(k))
+
+    def cs_quantile(self, q: Span) -> Expr:
+        """Cross-sectional q-quantile, broadcast to every symbol."""
+        return Expr("CsQuantile", self, _resolve_span(q))
+
+    def cs_neutralize(self, factor: "Expr") -> Expr:
+        """Cross-sectional OLS residual of self regressed on ``factor``.
+
+        The residuals are orthogonal to the factor and sum to zero across the
+        symbols that participate (both series finite at that timestamp).
+        """
+        return Expr("CsNeutralize", self, _coerce(factor))
 
     # -- Cross-asset reference -----------------------------------------------
 
@@ -446,6 +587,34 @@ class Expr:
     def day_of_month(self) -> Expr:
         """Extract day of month (1-31) from a timestamp column (UTC)."""
         return Expr("DayOfMonth", self)
+
+    def year(self) -> Expr:
+        """Extract the full year (e.g. 2024) from a timestamp column (UTC)."""
+        return Expr("Year", self)
+
+    def week_of_year(self) -> Expr:
+        """Extract the ISO-8601 week number (1-53) from a timestamp (UTC)."""
+        return Expr("WeekOfYear", self)
+
+    def day_of_year(self) -> Expr:
+        """Extract the ordinal day of year (1-366) from a timestamp (UTC)."""
+        return Expr("DayOfYear", self)
+
+    def is_month_start(self) -> Expr:
+        """1.0 on the first day of the month, else 0.0 (UTC)."""
+        return Expr("IsMonthStart", self)
+
+    def is_month_end(self) -> Expr:
+        """1.0 on the last day of the month, else 0.0 (UTC)."""
+        return Expr("IsMonthEnd", self)
+
+    def is_quarter_end(self) -> Expr:
+        """1.0 on the last day of a calendar quarter (Mar/Jun/Sep/Dec) (UTC)."""
+        return Expr("IsQuarterEnd", self)
+
+    def is_weekend(self) -> Expr:
+        """1.0 on Saturday or Sunday, else 0.0 (UTC)."""
+        return Expr("IsWeekend", self)
 
     # -- Repr ----------------------------------------------------------------
 

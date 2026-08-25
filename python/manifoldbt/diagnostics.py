@@ -116,18 +116,20 @@ def detect_lookahead(
       * **truncation** — split at 1/3 of the period. Catches *rolling*
         look-ahead (e.g. signal at bar T using bar T+1).
 
-    .. warning::
-       **What this cannot see.** Both sub-tests re-run the *same strategy* on
-       a shorter window. A parameter computed from the data *before* the
-       backtest — ``threshold = df.close.mean()`` in a notebook, then passed in
-       as a number — is unchanged by re-running, so the trades match and the
-       verdict is PASS. The leak already happened, outside the engine.
+    .. note::
+       **Scope.** Both sub-tests re-run the *same strategy* over a different
+       window, which is what lets them isolate bias introduced by the engine or
+       by the strategy's own use of time. A parameter computed from the data
+       *before* the backtest — ``threshold = df.close.mean()`` in a notebook,
+       then handed in as a number — is unchanged by re-running, so the trades
+       match and the verdict is clean: that bias entered upstream, in the
+       research step, and is a different thing to check for.
 
-       This is a property of every re-run-based method, not a gap to be closed
-       here: no such test can audit a constant. The defence is to treat any
-       parameter derived from data as part of the pipeline and re-derive it on
-       the window under test. ``examples/25_lookahead_trap.py`` demonstrates
-       the blind spot and the technique that does catch it.
+       The boundary is shared by every re-run-based method: none can weigh a
+       constant. Treat any parameter derived from data as part of the pipeline
+       and re-derive it on the window under test.
+       ``examples/25_lookahead_trap.py`` works through both sides with output
+       you can read.
 
     Args:
         strategy: Strategy definition.
@@ -139,9 +141,8 @@ def detect_lookahead(
     Returns:
         DiagnosticsResult with ``.passed``, ``.assert_clean()``, ``print()``.
     """
-    # Pro feature. Friendly UX gate first (clean LicenseError in notebooks); the
-    # analysis itself is enforced natively (`safety_checks`) so it can't be
-    # bypassed by editing this file.
+    # Pro feature: report it here so a notebook gets a clean LicenseError rather
+    # than a traceback from deeper in the analysis.
     from manifoldbt import _require_pro
     _require_pro("Look-ahead bias detection")
 
