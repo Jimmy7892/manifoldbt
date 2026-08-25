@@ -271,19 +271,46 @@ and
 alongside the worked example above, which exists to demonstrate a leak the
 detector **cannot** see and to say so plainly.
 
+### Execution semantics
+
+The rules below are pinned by tests. They are written out here so you can check
+them against the wheel you installed rather than take them on faith. Where a
+choice was available, the pessimistic one was taken.
+
+| Situation | What the engine does |
+|---|---|
+| Stop-loss and take-profit are both touched in the same bar | **The stop wins.** The path within a bar is unknown, so the unfavourable outcome is assumed rather than the profitable one. |
+| Price gaps through a stop | Fills at the bar's **open**, not at the stop price. A stop at 100 on a bar opening at 95 fills at 95. |
+| A limit entry is never reached | It expires at the end of its good-till window without filling. |
+| A limit entry is immediate-or-cancel | It is cancelled, and will not fill on a later bar that would have triggered it. |
+| A stop-limit's stop level is touched | The order arms and then rests at its limit, which may never fill. |
+| An order is too large for the bar | It fills over several bars at the configured participation rate, and the partially filled position is bracketed **while** it fills. |
+| Trailing stops | Never read the intra-bar path they would have to peek at to do better. |
+| An execution-price expression evaluates to NaN | Falls back to the close and warns, rather than dropping the trade silently. |
+| A short option's maintenance margin exceeds equity | The position is force-closed on that bar. |
+| Fees, funding and borrow rates | Resolved per symbol, so venues inside one portfolio keep their own rates. |
+
 ### What is not covered
 
 The edges, stated rather than left to be discovered:
 
-- Perpetual funding is simulated but has no cross-engine parity test.
-- The largest universe under test is three instruments. Cross-sectional research
-  across thousands of assets is exercised by the sweep benchmarks, not by the
-  correctness suite.
+- **No general liquidation model.** Margin force-close exists for short options
+  only. A leveraged spot or perpetual position is not liquidated by the engine.
+- **No corporate actions.** Yahoo prices arrive dividend-adjusted from the
+  source (`dataset="raw"` opts out) and splits are whatever the provider
+  returns. Nothing in the engine reconstructs either.
+- Perpetual funding is exercised by the engine's own tests, but has no
+  cross-engine parity test.
+- The largest universe under test is a handful of instruments. Cross-sectional
+  research across thousands of assets is exercised by the sweep benchmarks, not
+  by the correctness suite.
 - Look-ahead coverage is two regression tests and one worked example, not a
   systematic battery of leak archetypes.
 
-Independent verification is welcome. A reproduction showing a fill this engine
-gets wrong is the most useful report this project can receive.
+The engine's own Rust suite is not published, which is why the rules above are
+written out rather than linked. Independent verification is welcome, and a
+reproduction showing a fill this engine gets wrong is the most useful report
+this project can receive.
 
 ## Performance
 
