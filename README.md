@@ -256,9 +256,14 @@ tests skipped rather than showing a green tick that hides them.
 
 **Fill-level parity with vectorbt.**
 [`test_parity_vectorbt.py`](https://github.com/manifoldbt/manifoldbt/blob/master/python/tests/test_parity_vectorbt.py)
-compares entry price, exit price and exit reason **trade by trade**, not summary
-statistics: market take-profit, market stop-loss, stop-loss/take-profit
-brackets, shorts, trailing stops, and fees across multiple round trips.
+checks **where a trade actually filled and why it exited**, not a summary
+statistic. Each scenario is a short series built to produce one clean round
+trip, and the entry price, the exit price, the exit reason and the final return
+are all asserted against vectorbt: market take-profit, market stop-loss,
+stop-loss/take-profit brackets, shorts and trailing stops. A further scenario
+pins the fee arithmetic across two round trips. The equity curve is deliberately
+left out, because a Community build caps it to daily resolution and it would not
+be an apples-to-apples comparison.
 
 **Resting limit entries are checked without vectorbt**, against an independent
 NumPy model written from the order semantics rather than from the engine, so the
@@ -299,6 +304,9 @@ The edges, stated rather than left to be discovered:
 - **No corporate actions.** Yahoo prices arrive dividend-adjusted from the
   source (`dataset="raw"` opts out) and splits are whatever the provider
   returns. Nothing in the engine reconstructs either.
+- The cross-engine scenarios run on short synthetic series, each built to
+  isolate one behaviour. They are not a long backtest over market data compared
+  trade for trade.
 - Perpetual funding is exercised by the engine's own tests, but has no
   cross-engine parity test.
 - The largest universe under test is a handful of instruments. Cross-sectional
