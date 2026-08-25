@@ -95,7 +95,7 @@ manifoldbt = "manifoldbt.cli:main"
 Homepage = "https://www.manifoldbt.com"
 Documentation = "https://www.manifoldbt.com/docs/documentation.html"
 Repository = "https://github.com/manifoldbt/manifoldbt"
-Discord = "https://discord.gg/bvU6Wjc72d"
+Discord = "https://discord.gg/MTRDFu67bK"
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
