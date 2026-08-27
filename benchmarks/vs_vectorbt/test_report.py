@@ -113,3 +113,20 @@ def test_the_annex_still_lists_the_timings_it_explains():
 
     assert "Results differ, kept out of the headline" in text
     assert text.count("| bracket_sl_tp |") == 3
+
+
+def test_a_divergence_on_an_untimed_point_stays_out_of_the_annex():
+    """The annex explains its own table.
+
+    A documented point whose timing was never published appears nowhere in the
+    report, so a measured size for it would be an explanation with nothing to
+    explain. Feeding render() `documented` instead of `timed` produced exactly
+    that: four bullets under a three-row table.
+    """
+    untimed = _row(50_000, 500, 1200, 700)
+    del untimed["timings"]
+
+    text = report.render(_payload(*(THREE_POINTS + (untimed,))))
+
+    assert "at 50,000 bars" not in text
+    assert text.count("re-enter on the exit bar") == 3
