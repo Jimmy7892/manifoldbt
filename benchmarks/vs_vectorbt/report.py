@@ -432,7 +432,7 @@ def render(payload: Dict[str, Any]) -> str:
     timed = [r for r in documented if r.get("timings")]
     if timed:
         lines += _speed_table(timed, "Results differ, kept out of the headline", payload)
-        lines += _divergence_note(documented, payload)
+        lines += _divergence_note(timed, payload)
 
     if failed:
         lines += ["## Timing withheld", ""]
