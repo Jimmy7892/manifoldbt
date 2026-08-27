@@ -16,6 +16,7 @@ from manifoldbt._native import (
     BatchResultLite,
     DataStore,
     activate,
+    license_expiry as _license_expiry,
     license_info as _license_info,
     compile_strategy_json,
     run as _run_native,
@@ -91,7 +92,17 @@ def _print_banner():
     try:
         tier, email = _license_info()
         if tier == "Pro" and email:
-            print(f"manifoldbt v{__version__} | \033[38;5;214mPro\033[0m | {email}")
+            # A trial shows its end date up front. Without this the banner is
+            # identical to a paid licence, and the expiry is discovered the day
+            # everything stops working, mid-session.
+            trial = ""
+            try:
+                expiry = _license_expiry()
+                if expiry:
+                    trial = f" (trial ends {expiry[:10]})"
+            except Exception:
+                pass
+            print(f"manifoldbt v{__version__} | \033[38;5;214mPro\033[0m{trial} | {email}")
         else:
             print(f"manifoldbt v{__version__} | \033[36mCommunity\033[0m | upgrade: www.manifoldbt.com")
     except Exception:
