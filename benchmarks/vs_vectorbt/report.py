@@ -384,7 +384,7 @@ def _divergence_line(row: Dict[str, Any], payload: Dict[str, Any]) -> str:
         return ""
     line = (
         "- `{w}` at {b:,} bars: {n} of {t} {ref} round-trips re-enter on the exit "
-        "bar ({p:.0%}), from {sl} stop and {tp} target exits.".format(
+        "bar ({p:.0%}); the run books {sl} stop and {tp} target exits in all.".format(
             w=row["workload"], b=row["bars"], n=view["reentries_on_exit_bar"],
             t=view["round_trips"], p=view["share_of_round_trips"],
             sl=view["sl_exits"], tp=view["tp_exits"], ref=reference,
@@ -393,7 +393,22 @@ def _divergence_line(row: Dict[str, Any], payload: Dict[str, Any]) -> str:
     for engine, scale in scales.items():
         if engine == reference or "round_trips" not in scale:
             continue
-        line += " {e} books {n}.".format(e=engine, n=scale["round_trips"])
+        line += " {e} books {n}".format(e=engine, n=scale["round_trips"])
+        if "reentries_deferred" in scale:
+            # An engine that defers rather than skips loses only the re-entries
+            # whose level has gone false a bar later, so the two halves are
+            # printed from DIFFERENT sources on purpose: the deferred count is
+            # measured, and what it lost is the round-trip delta. If the
+            # mechanism ever stops holding, the two stop summing to the
+            # reference's count in front of the reader instead of quietly.
+            line += ", {d} of them a bar late and {lost} not at all".format(
+                d=scale["reentries_deferred"],
+                lost=view["round_trips"] - scale["round_trips"],
+            )
+        if scale.get("reentries_on_exit_bar"):
+            line += ", and re-enters on the exit bar itself {n} times".format(
+                n=scale["reentries_on_exit_bar"])
+        line += "."
     return line
 
 
