@@ -200,7 +200,7 @@ def test_a_broken_identity_is_visible_in_the_report_not_papered_over():
     from the reference's own count. If vectorbt ever stops deferring exactly the
     population the reference re-enters on, the printed halves must stop summing
     in front of the reader. A renderer that computes one half from the other can
-    never show that, because its arithmetic is true by construction.
+    no way to show that, because its arithmetic is true by construction.
     """
     # 700 deferred against a 925 re-entry count and a 94 round-trip delta: the
     # mechanism has changed and the numbers no longer close.
@@ -213,7 +213,7 @@ def test_a_broken_identity_is_visible_in_the_report_not_papered_over():
 
 def test_a_skipping_engine_keeps_its_own_shorter_line():
     """raptorbt does not defer, so it gets no deferral clause. The engine that
-    was already measured must not acquire a second measure it never reported."""
+    was already measured must not acquire a second measure it did not report."""
     text = report.render(_payload(
         _deferring(_row(100_000, 925, 2309, 1384), round_trips=2215, deferred=831)))
 
@@ -256,7 +256,7 @@ def test_an_ordinary_next_bar_reentry_is_not_a_deferral():
     Same shape -- exit on bar 10, entry on bar 11 -- but the level was FALSE at
     bar 10, so the reference does not re-enter there either and both engines
     open on bar 11 for the same reason. Nothing has diverged, and counting it
-    inflates the measure by every ordinary re-entry in the run.
+    inflates the measure by the ordinary re-entries in the run.
     """
     level = [True] * 21
     level[10] = False
@@ -266,7 +266,7 @@ def test_an_ordinary_next_bar_reentry_is_not_a_deferral():
 
 
 def test_a_same_bar_reentry_is_counted_separately():
-    """What the reference does, and what this engine is claimed never to do."""
+    """What the reference does, and what this engine is claimed not to do."""
     counts = divergence.reentry_counts(
         entry_idx=[0, 10], exit_idx=[10, 20], level=[True] * 21)
 
@@ -314,15 +314,15 @@ def test_a_run_with_nothing_to_pair_counts_nothing():
 def test_the_identity_holds_at_lengths_nobody_publishes():
     """The two counts must close at series lengths the results matrix does not contain.
 
-    This is the one test here that needs the engines, and it exists because every
-    check that did not broke. Three published sizes agreed with a version of this
+    This is the one test here that needs the engines, and it exists because the
+    checks that did not sweep a length broke. Three published sizes agreed with a version of this
     work that was wrong twice over, and only a fourth length showed it.
 
     The lengths are chosen to discriminate, not to pass. 110,000 and 120,000 on
     the default seed both end holding a position opened on the bar after an exit,
-    which is the configuration every defect here lived in; 100,000 is the control
-    that passes under all of them, and is here so a failure at the other two
-    cannot be read as the fixture being broken.
+    which is the configuration both defects here lived in; 100,000 is the control
+    that passes under either of them, and is here so a failure at the other two
+    has a passing control beside it.
 
     It skips where no engine is installed, which is the `bench-report` job on
     every push, so it prints a visible `skipped` line there. Nothing in this
@@ -353,9 +353,9 @@ def test_the_identity_holds_at_lengths_nobody_publishes():
         assert measured["reentries_on_exit_bar"] == 0, bars
 
         # And the reference's own promise, which is what `engine_rbt.diagnose`'s
-        # docstring says the pair of counts exists for: raptorbt never re-arms, so
+        # docstring says the pair of counts exists for: raptorbt does not re-arm, so
         # its round-trip count is the reference's minus that population EXACTLY.
-        # Counting an entry that never closed broke this on 26 of 90 swept
+        # Counting an unclosed entry broke this on 26 of 90 swept
         # (length, seed) pairs, 110,000 and 120,000 among them.
         skipping = engine_rbt.prepare("bracket_sl_tp", frame, tempfile.mkdtemp())()
         assert reference["round_trips"] - reference["reentries_on_exit_bar"] == \

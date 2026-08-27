@@ -106,7 +106,7 @@ def _level(key: str, ind: Dict[str, pd.Series]) -> pd.Series:
 
 def _series(df):
     """The four price Series, marshalled once. Shared with ``diagnose`` so the
-    measurement cannot end up reading a differently-built frame than the run."""
+    measurement does not read a differently-built frame than the run."""
     index = pd.DatetimeIndex(df["timestamp"])
     return (
         pd.Series(df["close"].to_numpy(dtype=np.float64), index=index),
@@ -136,7 +136,7 @@ def _sizing(key: str) -> Dict[str, Any]:
 
 def _book(close, open_, high, low, level, *, size, size_type, fees, slippage, sl, tp):
     """``from_signals`` in one place. The timed path and the untimed measurement
-    call this, so a semantics change cannot reach one and not the other."""
+    call this, so a semantics change reaches both or neither."""
     return vbt.Portfolio.from_signals(
         close,
         entries=level,
@@ -266,7 +266,7 @@ def diagnose(key: str, df, workdir: str | None = None) -> Dict[str, Any]:
     """Untimed measurement of how far the bracket divergence goes.
 
     The reference counts the round-trips it opens on an exit bar. raptorbt's
-    mirror image is a *missing* population — it never re-arms, so its count is
+    mirror image is a *missing* population — it does not re-arm, so its count is
     the reference's minus that population exactly. vectorbt's is not missing, it
     is *late*: one order per bar, so the re-entry the reference books at the
     close of the exit bar lands on the bar after, and is lost only when the

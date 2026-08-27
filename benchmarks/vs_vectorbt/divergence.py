@@ -3,9 +3,9 @@
 Kept in a module of its own, with no engine import and no third-party import,
 for one reason: it is the measurement, and the measurement is what a reader has
 least reason to take on faith. `test_report.py` runs in a job that installs
-pytest and nothing else, so anything that needs numpy or a wheel cannot be
-checked there. A few hundred thousand trades in plain Python is untimed work
-either way -- the harness times a backtest, never this.
+pytest and nothing else, so anything that needs numpy or a wheel is out of reach
+there. A few hundred thousand trades in plain Python is untimed work
+either way: bench.py calls this outside the timed region.
 """
 from __future__ import annotations
 
