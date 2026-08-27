@@ -27,6 +27,10 @@ import re
 import divergence
 import report
 
+# The rendered deferral clause, as (lost, deferred). One place, so a wording change
+# is one edit rather than a hunt through three tests.
+_DEFERRAL_RE = r"vectorbt books \d+, (\d+) fewer than manifoldbt; (\d+) of them opened"
+
 
 def _row(bars: int, reentries: int, round_trips: int, challenger_trips: int,
          *, scale: bool = True, workload: str = "bracket_sl_tp"):
@@ -161,11 +165,17 @@ def test_a_deferring_engine_is_measured_by_the_delay_not_the_population():
     the population would say it diverges on 94 where raptorbt diverges on 925 --
     ten times less by count, while sitting further from the reference in capital
     at that point. The line has to say what it deferred, not only what it lost.
+
+    Both figures are attributed to the engine they were measured on. "831 of
+    them a bar late and 94 not at all" reads as a claim that those 831 are the
+    reference's own re-entries, and that correspondence does not exist -- see
+    the comment in `_divergence_line`.
     """
     text = report.render(_payload(
         _deferring(_row(100_000, 925, 2309, 1384), round_trips=2215, deferred=831)))
 
-    assert "vectorbt books 2215, 831 of them a bar late and 94 not at all." in text
+    assert ("vectorbt books 2215, 94 fewer than manifoldbt; 831 of them opened on the "
+            "bar after vectorbt's own exit with the level still true.") in text
 
 
 def test_the_two_halves_sum_to_the_reference_count():
@@ -179,11 +189,9 @@ def test_the_two_halves_sum_to_the_reference_count():
         _deferring(_row(100_000, 925, 2309, 1384), round_trips=2215, deferred=831),
         _deferring(_row(1_000_000, 9330, 23075, 13745), round_trips=21983, deferred=8238)))
 
-    found = re.findall(r"re-enter on the exit bar.*?"
-                       r"vectorbt books \d+, (\d+) of them a bar late and (\d+) not at all",
-                       text)
+    found = re.findall(r"re-enter on the exit bar.*?" + _DEFERRAL_RE, text)
     assert len(found) == 2, found
-    for (deferred, lost), reentries in zip(found, (925, 9330)):
+    for (lost, deferred), reentries in zip(found, (925, 9330)):
         assert int(deferred) + int(lost) == reentries, (deferred, lost, reentries)
 
 
@@ -199,8 +207,7 @@ def test_a_broken_identity_is_visible_in_the_report_not_papered_over():
     text = report.render(_payload(
         _deferring(_row(100_000, 925, 2309, 1384), round_trips=2215, deferred=700)))
 
-    deferred, lost = re.search(
-        r"vectorbt books \d+, (\d+) of them a bar late and (\d+) not at all", text).groups()
+    lost, deferred = re.search(_DEFERRAL_RE, text).groups()
     assert int(deferred) + int(lost) != 925
 
 
@@ -298,3 +305,44 @@ def test_a_run_with_nothing_to_pair_counts_nothing():
         "reentries_deferred": 0, "reentries_on_exit_bar": 0}
     assert divergence.reentry_counts([], [], []) == {
         "reentries_deferred": 0, "reentries_on_exit_bar": 0}
+
+
+# --------------------------------------------------------------------------- #
+# The identity, across a swept series length
+# --------------------------------------------------------------------------- #
+
+def test_the_identity_holds_at_lengths_nobody_publishes():
+    """`reentries_deferred` + the round-trip delta must equal the reference's
+    `reentries_on_exit_bar` -- at sizes the results matrix does not contain.
+
+    This is the one test here that needs the engines, and it exists because
+    every check that did not broke. The first version of this work paired only
+    CLOSED vectorbt trades, which matched the published 100,000 / 1,000,000 /
+    10,000,000 rows exactly and was wrong: when a run ends holding a position
+    opened on the bar after an exit, `engine_mbt.diagnose` counts that entry and
+    the closed-only pairing does not, so the annex printed two numbers that no
+    longer summed. 120,000 bars on the default seed is such a run. Three sizes
+    agreed; the fourth did not.
+
+    It skips where no wheel is installed, which is the job that runs on every
+    push -- so this is a check for a developer and for the bench workflow, and
+    the reason it is a `skipped` line there rather than a silent absence.
+    """
+    import pytest
+    pytest.importorskip("vectorbt")
+    pytest.importorskip("manifoldbt")
+    import tempfile
+
+    import data as data_mod
+    import engine_mbt
+    import engine_vbt
+
+    for bars in (30_000, 120_000):
+        frame = data_mod.make_ohlcv(bars)
+        reference = engine_mbt.diagnose("bracket_sl_tp", frame, tempfile.mkdtemp())
+        measured = engine_vbt.diagnose("bracket_sl_tp", frame, tempfile.mkdtemp())
+        lost = reference["round_trips"] - measured["round_trips"]
+
+        assert measured["reentries_deferred"] + lost == reference["reentries_on_exit_bar"], (
+            bars, measured["reentries_deferred"], lost, reference["reentries_on_exit_bar"])
+        assert measured["reentries_on_exit_bar"] == 0, bars

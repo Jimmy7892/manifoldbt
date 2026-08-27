@@ -395,16 +395,22 @@ def _divergence_line(row: Dict[str, Any], payload: Dict[str, Any]) -> str:
             continue
         line += " {e} books {n}".format(e=engine, n=scale["round_trips"])
         if "reentries_deferred" in scale:
-            # An engine that defers rather than skips loses only the re-entries
-            # whose level has gone false a bar later, so the two halves are
-            # printed from DIFFERENT sources on purpose: the deferred count is
-            # measured, and what it lost is the round-trip delta. If the
-            # mechanism ever stops holding, the two stop summing to the
-            # reference's count in front of the reader instead of quietly.
-            line += ", {d} of them a bar late and {lost} not at all".format(
-                d=scale["reentries_deferred"],
-                lost=view["round_trips"] - scale["round_trips"],
-            )
+            # BOTH NUMBERS ARE ABOUT THIS ENGINE'S OWN TRADES, and the sentence
+            # says so. An earlier draft read "N of them a bar late and M not at
+            # all", which forces "them" to be the REFERENCE's re-entries and so
+            # claims a trade-for-trade correspondence. There is none: entering a
+            # bar later means entering at a different price, so the brackets that
+            # follow fire on different bars and the two streams drift. At 100,000
+            # bars only 649 of vectorbt's 831 deferrals sit on a bar the
+            # reference also re-entered on, and 276 of the reference's 925 have
+            # no deferral on their bar. The counts still sum -- that is a
+            # population identity, not a matching -- and printing them from
+            # different sources keeps the sum a check rather than a restatement.
+            line += ", {lost} fewer than {ref}; {d} of them opened on the bar " \
+                    "after {e}'s own exit with the level still true".format(
+                        d=scale["reentries_deferred"], e=engine, ref=reference,
+                        lost=view["round_trips"] - scale["round_trips"],
+                    )
         if scale.get("reentries_on_exit_bar"):
             line += ", and re-enters on the exit bar itself {n} times".format(
                 n=scale["reentries_on_exit_bar"])

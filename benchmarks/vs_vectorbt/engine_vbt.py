@@ -161,17 +161,16 @@ def _book(close, open_, high, low, level, *, size, size_type, fees, slippage, sl
 def prepare(key: str, df, workdir: str | None = None) -> Callable[[], Dict[str, Any]]:
     """Untimed setup; returns the closure the harness times."""
     p = WORKLOADS[key].params
-    index = pd.DatetimeIndex(df["timestamp"])
     close, open_, high, low = _series(df)
 
     sizing = _sizing(key)
     size, size_type = sizing["size"], sizing["size_type"]
     fees, slippage = sizing["fees"], sizing["slippage"]
-    sl, tp = sizing["sl"], sizing["tp"]
     wants_metrics = bool(p.get("metrics"))
     assets = int(p.get("assets", 1))
 
     if assets > 1:
+        index = pd.DatetimeIndex(df["timestamp"])
         # One book, not five. `from_signals` on a frame of columns builds five
         # independent portfolios unless it is told otherwise, and five separate
         # books is a different question from the one manifoldbt answers when it
@@ -304,13 +303,23 @@ def diagnose(key: str, df, workdir: str | None = None) -> Dict[str, Any]:
     level = _level(key, indicators(key, close))
     portfolio = _book(close, open_, high, low, level, **_sizing(key))
 
-    # Closed trades only, matching `round_trips` on the timed path: a position
-    # still open on the last bar is not a round-trip, and counting it here would
-    # put this column one out of step with the one beside it in the report.
+    # TWO DIFFERENT QUESTIONS, AND THEY TAKE DIFFERENT TRADE SETS.
+    #
+    # `round_trips` is closed-only, because that is what the timed path reports
+    # and this column sits beside it in the report: a position still open on the
+    # last bar is not a round-trip.
+    #
+    # The re-entry counting is over EVERY record, because the population it is
+    # compared against includes the reference's own unclosed final entry
+    # (`engine_mbt.diagnose` pairs `entries[1:]` against `exits`, so an entry
+    # that never closes is still counted as a re-entry). Dropping it here made
+    # the two sides disagree by exactly one whenever the run ended holding a
+    # position opened on the bar after an exit -- 5 of 14 swept (size, seed)
+    # pairs, including `--bars 120000` on the default seed. The open record
+    # always sorts last, so its exit index is never read as a previous exit.
     closed = portfolio.trades.closed
-    records = closed.records
-    entry_idx = np.asarray(records["entry_idx"])
-    exit_idx = np.asarray(records["exit_idx"])
+    entry_idx = np.asarray(portfolio.trades.records["entry_idx"])
+    exit_idx = np.asarray(portfolio.trades.records["exit_idx"])
 
     total_return = float(portfolio.total_return())
     out = {
