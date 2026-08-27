@@ -303,23 +303,16 @@ def diagnose(key: str, df, workdir: str | None = None) -> Dict[str, Any]:
     level = _level(key, indicators(key, close))
     portfolio = _book(close, open_, high, low, level, **_sizing(key))
 
-    # TWO DIFFERENT QUESTIONS, AND THEY TAKE DIFFERENT TRADE SETS.
-    #
-    # `round_trips` is closed-only, because that is what the timed path reports
-    # and this column sits beside it in the report: a position still open on the
-    # last bar is not a round-trip.
-    #
-    # The re-entry counting is over EVERY record, because the population it is
-    # compared against includes the reference's own unclosed final entry
-    # (`engine_mbt.diagnose` pairs `entries[1:]` against `exits`, so an entry
-    # that never closes is still counted as a re-entry). Dropping it here made
-    # the two sides disagree by exactly one whenever the run ended holding a
-    # position opened on the bar after an exit -- 5 of 14 swept (size, seed)
-    # pairs, including `--bars 120000` on the default seed. The open record
-    # always sorts last, so its exit index is never read as a previous exit.
+    # Closed trades only, on both sides. A position still open on the last bar
+    # is not a round-trip: it is not counted in `round_trips`, the sentence in
+    # the report says "N of them" about that same closed population, and after
+    # the one-line repair in `engine_mbt.diagnose` the reference does not count
+    # its own unclosed final entry either. Counting it here instead made the
+    # rendered line claim 1018 of 2695 closed round-trips at 120,000 bars when
+    # only 1017 of them qualified.
     closed = portfolio.trades.closed
-    entry_idx = np.asarray(portfolio.trades.records["entry_idx"])
-    exit_idx = np.asarray(portfolio.trades.records["exit_idx"])
+    entry_idx = np.asarray(closed.records["entry_idx"])
+    exit_idx = np.asarray(closed.records["exit_idx"])
 
     total_return = float(portfolio.total_return())
     out = {

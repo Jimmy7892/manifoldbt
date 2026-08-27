@@ -312,37 +312,54 @@ def test_a_run_with_nothing_to_pair_counts_nothing():
 # --------------------------------------------------------------------------- #
 
 def test_the_identity_holds_at_lengths_nobody_publishes():
-    """`reentries_deferred` + the round-trip delta must equal the reference's
-    `reentries_on_exit_bar` -- at sizes the results matrix does not contain.
+    """The two counts must close at series lengths the results matrix does not contain.
 
-    This is the one test here that needs the engines, and it exists because
-    every check that did not broke. The first version of this work paired only
-    CLOSED vectorbt trades, which matched the published 100,000 / 1,000,000 /
-    10,000,000 rows exactly and was wrong: when a run ends holding a position
-    opened on the bar after an exit, `engine_mbt.diagnose` counts that entry and
-    the closed-only pairing does not, so the annex printed two numbers that no
-    longer summed. 120,000 bars on the default seed is such a run. Three sizes
-    agreed; the fourth did not.
+    This is the one test here that needs the engines, and it exists because every
+    check that did not broke. Three published sizes agreed with a version of this
+    work that was wrong twice over, and only a fourth length showed it.
 
-    It skips where no wheel is installed, which is the job that runs on every
-    push -- so this is a check for a developer and for the bench workflow, and
-    the reason it is a `skipped` line there rather than a silent absence.
+    The lengths are chosen to discriminate, not to pass. 110,000 and 120,000 on
+    the default seed both end holding a position opened on the bar after an exit,
+    which is the configuration every defect here lived in; 100,000 is the control
+    that passes under all of them, and is here so a failure at the other two
+    cannot be read as the fixture being broken.
+
+    It skips where no engine is installed, which is the `bench-report` job on
+    every push, so it prints a visible `skipped` line there. Nothing in this
+    repository's CI runs it with the wheels present -- that is worth knowing
+    rather than assuming, and it is why the numbers in the pull request were
+    produced by hand against `requirements-lock.txt`.
     """
     import pytest
     pytest.importorskip("vectorbt")
     pytest.importorskip("manifoldbt")
+    pytest.importorskip("raptorbt")
     import tempfile
 
     import data as data_mod
     import engine_mbt
+    import engine_rbt
     import engine_vbt
 
-    for bars in (30_000, 120_000):
+    for bars in (100_000, 110_000, 120_000):
         frame = data_mod.make_ohlcv(bars)
         reference = engine_mbt.diagnose("bracket_sl_tp", frame, tempfile.mkdtemp())
         measured = engine_vbt.diagnose("bracket_sl_tp", frame, tempfile.mkdtemp())
         lost = reference["round_trips"] - measured["round_trips"]
 
         assert measured["reentries_deferred"] + lost == reference["reentries_on_exit_bar"], (
+            "deferred + lost must be the reference's own re-entry count",
             bars, measured["reentries_deferred"], lost, reference["reentries_on_exit_bar"])
         assert measured["reentries_on_exit_bar"] == 0, bars
+
+        # And the reference's own promise, which is what `engine_rbt.diagnose`'s
+        # docstring says the pair of counts exists for: raptorbt never re-arms, so
+        # its round-trip count is the reference's minus that population EXACTLY.
+        # Counting an entry that never closed broke this on 26 of 90 swept
+        # (length, seed) pairs, 110,000 and 120,000 among them.
+        skipping = engine_rbt.prepare("bracket_sl_tp", frame, tempfile.mkdtemp())()
+        assert reference["round_trips"] - reference["reentries_on_exit_bar"] == \
+            skipping["round_trips"], (
+                "the reference's re-entry count must subtract exactly to raptorbt's",
+                bars, reference["round_trips"], reference["reentries_on_exit_bar"],
+                skipping["round_trips"])
