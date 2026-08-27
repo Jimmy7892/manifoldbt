@@ -290,6 +290,10 @@ def diagnose(key: str, df, workdir: str | None = None) -> Dict[str, Any]:
         1,000,000 bars  8,238 + 1,092 =  9,330
         10,000,000 bars 83,124 + 10,171 = 93,295
 
+    The third row pairs a measured 83,124 with the reference count and delta from
+    the committed CI run; a different manifoldbt build reports 93,281 at that size
+    and the identity closes there too.
+
     ``reentries_on_exit_bar`` is reported here too and is expected to be zero.
     It is this workload's note — "vectorbt processes one order per bar and
     re-enters on the next bar instead" — written as a measurement that can fail,

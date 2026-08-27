@@ -199,7 +199,7 @@ def test_a_broken_identity_is_visible_in_the_report_not_papered_over():
     """The failure mode of the line above, and the reason `lost` is not derived
     from the reference's own count. If vectorbt ever stops deferring exactly the
     population the reference re-enters on, the printed halves must stop summing
-    in front of the reader. A renderer that computes one half from the other can
+    in front of the reader. A renderer that computes one half from the other has
     no way to show that, because its arithmetic is true by construction.
     """
     # 700 deferred against a 925 re-entry count and a 94 round-trip delta: the
@@ -318,9 +318,9 @@ def test_the_identity_holds_at_lengths_nobody_publishes():
     checks that did not sweep a length broke. Three published sizes agreed with a version of this
     work that was wrong twice over, and only a fourth length showed it.
 
-    The lengths are chosen to discriminate, not to pass. 110,000 and 120,000 on
-    the default seed both end holding a position opened on the bar after an exit,
-    which is the configuration both defects here lived in; 100,000 is the control
+    The lengths are chosen to discriminate, not to pass. 110,000 and 120,000 on the
+    default seed both end holding a position opened on the same bar as the exit before
+    it, which is the configuration both defects here lived in; 100,000 is the control
     that passes under either of them, and is here so a failure at the other two
     has a passing control beside it.
 

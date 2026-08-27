@@ -212,10 +212,13 @@ def diagnose(key: str, df, workdir: str) -> Dict[str, Any]:
     # position there is one more entry than exit, and the last entry -- which did not close --
     # was counted as a re-entry. The counts printed beside it are closed-only, so the
     # run ended one out of step. It made `round_trips - reentries_on_exit_bar == raptorbt's
-    # round_trips`, the subtraction this measure exists to keep checkable, fail on 26 of 90
-    # swept (length, seed) pairs -- including 110,000, 120,000 and 137,000 bars on the
-    # default seed. None of the published sizes is affected: 925 at 100,000 and 9,330 at
-    # 1,000,000 are unchanged, because those runs do not end on a same-bar re-entry.
+    # round_trips`, the subtraction this measure exists to keep checkable, fail whenever a
+    # run ends holding a position opened on the same bar as the exit before it. 110,000,
+    # 120,000 and 137,000 bars on the default seed are three such runs, and at 120,000
+    # the annex prints `raptorbt books 1678` against a predicted 1677. How often it happens
+    # is a property of the lengths you sweep, not a constant, so no rate is quoted here. None of the published
+    # sizes is affected: 925 at 100,000 and 9,330 at 1,000,000 come back the same before and
+    # after, because those runs do not end on a same-bar re-entry.
     n = min(len(exits) - 1, len(entries) - 1)
     same_bar = int((exits[:n] == entries[1 : n + 1]).sum()) if n > 0 else 0
     stats = result.metrics.get("trade_stats") or {}
