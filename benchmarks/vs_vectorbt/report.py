@@ -375,27 +375,44 @@ def _sweep_section(payload: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _divergence_note(row: Dict[str, Any], payload: Dict[str, Any]) -> List[str]:
-    """The measured size of a documented divergence, engine by engine."""
+def _divergence_line(row: Dict[str, Any], payload: Dict[str, Any]) -> str:
+    """The measured size of one documented divergence, engine by engine."""
     scales = row.get("divergence_scale") or {}
     reference = _reference(payload)
     view = scales.get(reference)
     if not view:
-        return []
-    lines = [
-        "`{w}` at {b:,} bars: {n} of {t} {ref} round-trips re-enter on the exit "
+        return ""
+    line = (
+        "- `{w}` at {b:,} bars: {n} of {t} {ref} round-trips re-enter on the exit "
         "bar ({p:.0%}), from {sl} stop and {tp} target exits.".format(
             w=row["workload"], b=row["bars"], n=view["reentries_on_exit_bar"],
             t=view["round_trips"], p=view["share_of_round_trips"],
             sl=view["sl_exits"], tp=view["tp_exits"], ref=reference,
-        ),
-    ]
+        )
+    )
     for engine, scale in scales.items():
         if engine == reference or "round_trips" not in scale:
             continue
-        lines[-1] += " {e} books {n}.".format(e=engine, n=scale["round_trips"])
-    lines += ["", "Cause in {}.".format(METHOD_LINK), ""]
-    return lines
+        line += " {e} books {n}.".format(e=engine, n=scale["round_trips"])
+    return line
+
+
+def _divergence_note(rows: List[Dict[str, Any]], payload: Dict[str, Any]) -> List[str]:
+    """Every measured divergence, one line each, then the cause once.
+
+    One line per row rather than one for the whole section, because README.md
+    promises a documented timing is published "with the cause and its measured
+    size", and the size is a property of the point rather than of the workload.
+    In the run this was written against, raptorbt sits 0.92% of capital from the
+    reference at 100,000 bars and 10.07% at 1,000,000, where it also crosses from
+    below the reference to above it. Rendering the first row and stopping
+    published the other two as timings with no measured size beside them.
+    """
+    lines = [line for line in
+             (_divergence_line(row, payload) for row in rows) if line]
+    if not lines:
+        return []
+    return lines + ["", "Cause in {}.".format(METHOD_LINK), ""]
 
 
 def render(payload: Dict[str, Any]) -> str:
@@ -415,10 +432,7 @@ def render(payload: Dict[str, Any]) -> str:
     timed = [r for r in documented if r.get("timings")]
     if timed:
         lines += _speed_table(timed, "Results differ, kept out of the headline", payload)
-        for row in documented:
-            if row.get("divergence_scale"):
-                lines += _divergence_note(row, payload)
-                break
+        lines += _divergence_note(documented, payload)
 
     if failed:
         lines += ["## Timing withheld", ""]
